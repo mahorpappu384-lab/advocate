@@ -31,6 +31,7 @@ urlpatterns = [
     path('auth/reset-password/',  views.ResetPasswordView.as_view(),  name='reset-password'),
     path('auth/change-password/', views.ChangePasswordView.as_view(), name='change-password'),
     path('auth/delete-account/',  views.DeleteAccountView.as_view(),  name='delete-account'),
+    path('health/', views.HealthView.as_view(), name='health'),
 
     # ══════════════════════════════════════════════════════════════════════════
     # USERS

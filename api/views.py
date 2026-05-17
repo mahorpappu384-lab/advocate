@@ -49,7 +49,27 @@ from project.permissions import IsOwnerOrReadOnly, IsMessageOwner
 logger = logging.getLogger(__name__)
 User = get_user_model()
 
+class HealthView(APIView):
+    """
+    Lightweight Health Check - Neon CU bachane ke liye
+    Database check completely removed.
+    Sirf yeh check karega ki Django app chal raha hai.
+    """
 
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        return Response({
+            "status": "ok",
+            "timestamp": timezone.now().isoformat(),
+            "checks": {
+                "database": "skipped",   # ← Ab check nahi hoga
+                "api": "ok"
+            },
+            "message": "API is running (Database check disabled to save Neon CU)",
+            "version": "1.0.0",
+        }, status=200)
+        
 # ══════════════════════════════════════════════════════════════════════════════
 # AUTH VIEWS
 # ══════════════════════════════════════════════════════════════════════════════
