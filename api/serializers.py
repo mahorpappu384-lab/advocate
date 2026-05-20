@@ -1,5 +1,6 @@
 """
 Advocate App - All Serializers
+UI Features aligned with LegalConnect screenshots.
 """
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
@@ -10,10 +11,11 @@ from .models import (
     AdvocateProfile, AdvocateEducation, AdvocateExperience, AdvocateAchievement,
     Connection, Follow, OTP,
     ChatRoom, ChatParticipant, Message, MessageReadReceipt,
-    Channel, ChannelMembership, ChannelPost, ChannelPostComment, ChannelPostLike,
-    Post, PostReaction, PostComment, PostCommentLike,
+    Channel, SubChannel, ChannelMembership, ChannelPost, ChannelPostComment, ChannelPostLike,
+    Post, PostReaction, PostComment, PostCommentLike, Hashtag, SavedPost, PostShare,
     CaseGroup, GroupMembership, GroupDocument,
     Notification, Report,
+    Hearing, LegalUpdate,
 )
 
 User = get_user_model()
@@ -58,7 +60,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
 
 class LoginSerializer(TokenObtainPairSerializer):
-    username_field = User.USERNAME_FIELD  # 'username'
+    username_field = User.USERNAME_FIELD
 
     @classmethod
     def get_token(cls, user):
@@ -83,9 +85,8 @@ class ForgotPasswordSerializer(serializers.Serializer):
 
 
 class ResetPasswordSerializer(serializers.Serializer):
-    """Flutter auth_service sends: email, code, new_password"""
     email = serializers.EmailField()
-    code = serializers.CharField(max_length=6)           # Flutter field name
+    code = serializers.CharField(max_length=6)
     new_password = serializers.CharField(validators=[validate_password])
 
 
@@ -105,12 +106,15 @@ class ChangePasswordSerializer(serializers.Serializer):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class UserMiniSerializer(serializers.ModelSerializer):
-    """Minimal user info for embedding in other serializers."""
+    """Minimal user info — embedded in posts, messages, channels."""
     profile_photo = serializers.SerializerMethodField()
+    is_advocate_verified = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ['id', 'full_name', 'email', 'is_advocate', 'advocate_status', 'profile_photo']
+        fields = ['id', 'full_name', 'username', 'email', 'is_advocate',
+                  'advocate_status', 'profile_photo', 'is_advocate_verified',
+                  'presence_status', 'is_online']
 
     def get_profile_photo(self, obj):
         try:
@@ -123,13 +127,31 @@ class UserMiniSerializer(serializers.ModelSerializer):
             pass
         return None
 
+    def get_is_advocate_verified(self, obj):
+        return obj.is_advocate and obj.advocate_status == 'approved'
+
 
 class UserProfileSerializer(serializers.ModelSerializer):
+    """Full user profile — /api/users/me/ and /api/users/<id>/"""
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'full_name', 'phone', 'is_verified', 'is_advocate',
-                  'advocate_status', 'date_joined', 'is_online', 'last_seen']
-        read_only_fields = ['id', 'username', 'email', 'is_verified', 'advocate_status', 'date_joined']
+        fields = [
+            'id', 'username', 'email', 'full_name', 'phone',
+            'is_verified', 'is_advocate', 'advocate_status',
+            'date_joined', 'is_online', 'last_seen',
+            # Profile screen: presence status
+            'presence_status',
+            # Profile screen: appearance
+            'theme', 'accent_color',
+            # Profile screen: notification toggles
+            'notif_messages', 'notif_group_mentions', 'notif_stories', 'notif_calls',
+            # Profile screen: privacy settings
+            'privacy_read_receipts', 'privacy_last_seen', 'privacy_online_status',
+            # Home stats
+            'cases_handled', 'advocate_rating',
+        ]
+        read_only_fields = ['id', 'username', 'email', 'is_verified',
+                            'advocate_status', 'date_joined']
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -169,7 +191,8 @@ class AdvocateProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = AdvocateProfile
         fields = '__all__'
-        read_only_fields = ['user', 'connection_count', 'follower_count', 'post_count']
+        read_only_fields = ['user', 'connection_count', 'follower_count',
+                            'post_count', 'media_count', 'group_count', 'message_count']
 
     def get_is_connected(self, obj):
         request = self.context.get('request')
@@ -200,19 +223,50 @@ class AdvocateProfileSerializer(serializers.ModelSerializer):
         return None
 
 
-class AdvocateProfileCreateSerializer(serializers.ModelSerializer):
-    """For creating advocate profile (Bar Council verification)."""
-    class Meta:
-        model = AdvocateProfile
-        exclude = ['user', 'connection_count', 'follower_count', 'post_count']
-
-
 class AdvocateVerificationSerializer(serializers.ModelSerializer):
-    """For bar council ID upload."""
     class Meta:
         model = AdvocateProfile
         fields = ['bar_council_id', 'bar_council_id_image', 'enrollment_number',
                   'enrollment_year', 'state_bar_council']
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HOME SCREEN SERIALIZERS
+# ══════════════════════════════════════════════════════════════════════════════
+
+class HearingSerializer(serializers.ModelSerializer):
+    """Home screen: Today's Hearings list."""
+    class Meta:
+        model = Hearing
+        fields = ['id', 'case_title', 'case_number', 'court', 'court_room',
+                  'hearing_time', 'hearing_date', 'hearing_type', 'notes',
+                  'is_completed', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class LegalUpdateSerializer(serializers.ModelSerializer):
+    """Home screen: Recent Updates list."""
+    class Meta:
+        model = LegalUpdate
+        fields = ['id', 'title', 'summary', 'source_url', 'urgency', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+
+class HomeDashboardSerializer(serializers.Serializer):
+    """
+    Home screen: Combined dashboard response.
+    GET /api/home/dashboard/
+    Returns stats, today's hearings, recent updates.
+    """
+    # Stats cards
+    cases_handled = serializers.IntegerField()
+    connections = serializers.IntegerField()
+    hearings_today = serializers.IntegerField()
+    advocate_rating = serializers.DecimalField(max_digits=3, decimal_places=1)
+
+    # Lists
+    todays_hearings = HearingSerializer(many=True)
+    recent_updates = LegalUpdateSerializer(many=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -247,6 +301,7 @@ class FollowSerializer(serializers.ModelSerializer):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CHAT / MESSAGING SERIALIZERS
+# Chat screen: pinned chats, All/Direct/Groups/Pinned tabs, unread badges
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ChatParticipantSerializer(serializers.ModelSerializer):
@@ -254,7 +309,7 @@ class ChatParticipantSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ChatParticipant
-        fields = ['user', 'role', 'joined_at', 'last_read_at', 'is_muted']
+        fields = ['user', 'role', 'joined_at', 'last_read_at', 'is_muted', 'is_pinned']
 
 
 class MessageSerializer(serializers.ModelSerializer):
@@ -295,12 +350,14 @@ class ChatRoomSerializer(serializers.ModelSerializer):
     participants = ChatParticipantSerializer(source='room_participants', many=True, read_only=True)
     last_message = serializers.SerializerMethodField()
     unread_count = serializers.SerializerMethodField()
+    # Chat screen: is this chat pinned by the current user
+    is_pinned_by_me = serializers.SerializerMethodField()
 
     class Meta:
         model = ChatRoom
         fields = ['id', 'room_type', 'name', 'description', 'group_icon',
                   'created_by', 'participants', 'last_message', 'unread_count',
-                  'created_at', 'updated_at']
+                  'is_pinned_by_me', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_by', 'created_at', 'updated_at']
 
     def get_last_message(self, obj):
@@ -310,8 +367,10 @@ class ChatRoomSerializer(serializers.ModelSerializer):
                 'id': str(last.id),
                 'content': last.content if last.message_type == 'text' else f'[{last.message_type}]',
                 'sender_name': last.sender.full_name if last.sender else 'Unknown',
+                'sender_username': last.sender.username if last.sender else '',
                 'created_at': last.created_at,
                 'message_type': last.message_type,
+                'is_edited': last.is_edited,
             }
         return None
 
@@ -327,6 +386,13 @@ class ChatRoomSerializer(serializers.ModelSerializer):
             return obj.messages.filter(created_at__gt=last_read, is_deleted=False).exclude(sender=request.user).count()
         return obj.messages.filter(is_deleted=False).exclude(sender=request.user).count()
 
+    def get_is_pinned_by_me(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+        p = obj.room_participants.filter(user=request.user).first()
+        return p.is_pinned if p else False
+
 
 class CreateDirectChatSerializer(serializers.Serializer):
     user_id = serializers.UUIDField()
@@ -340,18 +406,29 @@ class CreateGroupChatSerializer(serializers.Serializer):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CHANNEL SERIALIZERS
+# Channel screen: sub-channels, pinned posts, react+reply
 # ══════════════════════════════════════════════════════════════════════════════
+
+class SubChannelSerializer(serializers.ModelSerializer):
+    """Channel screen: sub-channel list inside a parent channel."""
+    class Meta:
+        model = SubChannel
+        fields = ['id', 'name', 'slug', 'description', 'unread_count', 'created_at']
+        read_only_fields = ['id', 'slug', 'created_at']
+
 
 class ChannelSerializer(serializers.ModelSerializer):
     created_by = UserMiniSerializer(read_only=True)
     is_member = serializers.SerializerMethodField()
     user_role = serializers.SerializerMethodField()
+    sub_channels = SubChannelSerializer(many=True, read_only=True)
 
     class Meta:
         model = Channel
         fields = ['id', 'name', 'slug', 'description', 'channel_type', 'icon',
                   'cover', 'court_name', 'city', 'state', 'is_official', 'is_private',
-                  'created_by', 'member_count', 'is_member', 'user_role', 'created_at']
+                  'pinned_message', 'created_by', 'member_count', 'is_member',
+                  'user_role', 'sub_channels', 'created_at']
         read_only_fields = ['id', 'slug', 'created_by', 'member_count', 'created_at']
 
     def get_is_member(self, obj):
@@ -389,10 +466,13 @@ class ChannelPostSerializer(serializers.ModelSerializer):
     author = UserMiniSerializer(read_only=True)
     comments = ChannelPostCommentSerializer(many=True, read_only=True)
     is_liked = serializers.SerializerMethodField()
+    # Channel screen: which sub-channel this post belongs to
+    sub_channel_name = serializers.SerializerMethodField()
 
     class Meta:
         model = ChannelPost
-        fields = ['id', 'channel', 'author', 'content', 'attachment', 'attachment_type',
+        fields = ['id', 'channel', 'sub_channel', 'sub_channel_name', 'author',
+                  'content', 'attachment', 'attachment_type',
                   'is_pinned', 'is_announcement', 'like_count', 'comment_count',
                   'comments', 'is_liked', 'created_at', 'updated_at']
         read_only_fields = ['id', 'author', 'like_count', 'comment_count', 'created_at']
@@ -403,10 +483,21 @@ class ChannelPostSerializer(serializers.ModelSerializer):
             return False
         return obj.likes.filter(user=request.user).exists()
 
+    def get_sub_channel_name(self, obj):
+        return obj.sub_channel.name if obj.sub_channel else None
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # COMMUNITY FEED SERIALIZERS
+# Feed screen: hashtags, trending, save/share, post types
 # ══════════════════════════════════════════════════════════════════════════════
+
+class HashtagSerializer(serializers.ModelSerializer):
+    """Feed screen: Trending Now section."""
+    class Meta:
+        model = Hashtag
+        fields = ['id', 'name', 'post_count']
+
 
 class PostCommentSerializer(serializers.ModelSerializer):
     author = UserMiniSerializer(read_only=True)
@@ -415,8 +506,6 @@ class PostCommentSerializer(serializers.ModelSerializer):
     class Meta:
         model = PostComment
         fields = ['id', 'post', 'author', 'content', 'parent', 'like_count', 'replies', 'created_at']
-        # 'post' read_only — view ke perform_create mein set hota hai
-        # Flutter sirf 'content' (aur optional 'parent') bhejta hai
         read_only_fields = ['id', 'post', 'author', 'like_count', 'created_at']
 
     def get_replies(self, obj):
@@ -431,12 +520,21 @@ class PostSerializer(serializers.ModelSerializer):
     author = UserMiniSerializer(read_only=True)
     user_reaction = serializers.SerializerMethodField()
     top_comments = serializers.SerializerMethodField()
+    hashtags = HashtagSerializer(many=True, read_only=True)
+    # Feed screen: has the current user saved this post?
+    is_saved = serializers.SerializerMethodField()
+    # Raw hashtag input for creating posts
+    hashtag_names = serializers.ListField(
+        child=serializers.CharField(max_length=100),
+        write_only=True, required=False
+    )
 
     class Meta:
         model = Post
         fields = ['id', 'author', 'post_type', 'content', 'media', 'media_type',
                   'is_public', 'like_count', 'comment_count', 'share_count',
-                  'user_reaction', 'top_comments', 'created_at', 'updated_at']
+                  'user_reaction', 'top_comments', 'hashtags', 'hashtag_names',
+                  'is_saved', 'created_at', 'updated_at']
         read_only_fields = ['id', 'author', 'like_count', 'comment_count',
                             'share_count', 'created_at', 'updated_at']
 
@@ -450,6 +548,12 @@ class PostSerializer(serializers.ModelSerializer):
     def get_top_comments(self, obj):
         top = obj.comments.filter(parent=None).order_by('-created_at')[:3]
         return PostCommentSerializer(top, many=True, context=self.context).data
+
+    def get_is_saved(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+        return SavedPost.objects.filter(user=request.user, post=obj).exists()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -526,12 +630,11 @@ class ReportSerializer(serializers.ModelSerializer):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class AdminUserSerializer(serializers.ModelSerializer):
-    """Full user details for admin panel."""
     class Meta:
         model = User
         fields = ['id', 'username', 'email', 'full_name', 'phone', 'is_active', 'is_staff',
                   'is_verified', 'is_advocate', 'advocate_status', 'date_joined',
-                  'last_seen', 'is_online']
+                  'last_seen', 'is_online', 'presence_status', 'cases_handled', 'advocate_rating']
         read_only_fields = ['id', 'username', 'date_joined']
 
 

@@ -1,6 +1,16 @@
 """
-Advocate App — Views (Flutter-aligned)
-Every URL, field name, and response key matches the Flutter service files exactly.
+Advocate App — Views (LegalConnect UI aligned)
+New features added per screenshots:
+- HomeDashboardView: stats + today's hearings + recent updates
+- HearingView: CRUD for today's hearings
+- LegalUpdateView: recent updates
+- PinChatView: pin/unpin a chat room
+- SubChannelView: sub-channels inside a channel
+- HashtagListView & TrendingHashtagsView: trending topics
+- SavePostView: save/unsave posts
+- SharePostView: share count tracking
+- UserPresenceView: Online/Away/Offline status update
+- UserPreferencesView: theme, accent color, notifications, privacy settings
 """
 import logging
 from django.contrib.auth import get_user_model
@@ -20,10 +30,11 @@ from .models import (
     AdvocateProfile, AdvocateEducation, AdvocateExperience, AdvocateAchievement,
     Connection, Follow, OTP,
     ChatRoom, ChatParticipant, Message, MessageReadReceipt,
-    Channel, ChannelMembership, ChannelPost, ChannelPostComment, ChannelPostLike,
-    Post, PostReaction, PostComment,
+    Channel, SubChannel, ChannelMembership, ChannelPost, ChannelPostComment, ChannelPostLike,
+    Post, PostReaction, PostComment, Hashtag, SavedPost, PostShare,
     CaseGroup, GroupMembership, GroupDocument,
     Notification, Report,
+    Hearing, LegalUpdate,
 )
 from .serializers import (
     RegisterSerializer, LoginSerializer, OTPVerifySerializer,
@@ -33,10 +44,11 @@ from .serializers import (
     AdvocateEducationSerializer, AdvocateExperienceSerializer, AdvocateAchievementSerializer,
     ConnectionSerializer, ConnectionRequestSerializer, FollowSerializer,
     ChatRoomSerializer, MessageSerializer, CreateDirectChatSerializer, CreateGroupChatSerializer,
-    ChannelSerializer, ChannelPostSerializer, ChannelPostCommentSerializer,
-    PostSerializer, PostCommentSerializer,
+    ChannelSerializer, SubChannelSerializer, ChannelPostSerializer, ChannelPostCommentSerializer,
+    PostSerializer, PostCommentSerializer, HashtagSerializer,
     CaseGroupSerializer, GroupDocumentSerializer,
     NotificationSerializer, ReportSerializer,
+    HearingSerializer, LegalUpdateSerializer,
 )
 from .utils import (
     create_otp, verify_otp, send_otp_email,
@@ -49,32 +61,27 @@ from project.permissions import IsOwnerOrReadOnly, IsMessageOwner
 logger = logging.getLogger(__name__)
 User = get_user_model()
 
-class HealthView(APIView):
-    """
-    Lightweight Health Check - Neon CU bachane ke liye
-    Database check completely removed.
-    Sirf yeh check karega ki Django app chal raha hai.
-    """
 
+# ══════════════════════════════════════════════════════════════════════════════
+# HEALTH
+# ══════════════════════════════════════════════════════════════════════════════
+
+class HealthView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
         return Response({
             "status": "ok",
             "timestamp": timezone.now().isoformat(),
-            "checks": {
-                "database": "skipped",   # ← Ab check nahi hoga
-                "api": "ok"
-            },
-            "message": "API is running (Database check disabled to save Neon CU)",
+            "checks": {"database": "skipped", "api": "ok"},
+            "message": "API is running",
             "version": "1.0.0",
         }, status=200)
-        
-# ══════════════════════════════════════════════════════════════════════════════
-# AUTH VIEWS
-# ══════════════════════════════════════════════════════════════════════════════
 
-# lib/views.py  →  Replace your RegisterView with this:
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AUTH VIEWS  (login/register unchanged as requested)
+# ══════════════════════════════════════════════════════════════════════════════
 
 class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
@@ -82,19 +89,15 @@ class RegisterView(generics.CreateAPIView):
 
     def create(self, request, *args, **kwargs):
         data = request.data.copy()
-        
-        # Ensure password2 is present for serializer validation
         if 'password2' not in data:
             data['password2'] = data.get('password', '')
 
         serializer = self.get_serializer(data=data)
         if not serializer.is_valid():
-            print("🔴 Registration Validation Error:", serializer.errors)  # ← For debugging
+            print("🔴 Registration Validation Error:", serializer.errors)
             return Response({"error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
         user = serializer.save()
-
-        # Auto verify user (since we removed OTP)
         user.is_verified = True
         user.save(update_fields=['is_verified'])
 
@@ -108,11 +111,6 @@ class RegisterView(generics.CreateAPIView):
 
 
 class LoginView(TokenObtainPairView):
-    """
-    POST /api/auth/login/
-    Flutter sends: username, password
-    Returns: { access, refresh, user: {...} }
-    """
     serializer_class = LoginSerializer
     permission_classes = [permissions.AllowAny]
 
@@ -131,6 +129,9 @@ class LoginView(TokenObtainPairView):
                     'is_advocate': user.is_advocate,
                     'advocate_status': user.advocate_status,
                     'is_online': user.is_online,
+                    'presence_status': user.presence_status,
+                    'theme': user.theme,
+                    'accent_color': user.accent_color,
                 }
             except User.DoesNotExist:
                 pass
@@ -138,7 +139,6 @@ class LoginView(TokenObtainPairView):
 
 
 class LogoutView(APIView):
-    """POST /api/auth/logout/  — Flutter sends: refresh_token"""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
@@ -147,35 +147,34 @@ class LogoutView(APIView):
             token.blacklist()
         except Exception:
             pass
+        User.objects.filter(id=request.user.id).update(
+            is_online=False,
+            presence_status='offline',
+            last_seen=timezone.now()
+        )
         return Response({"message": "Logged out successfully."})
 
 
 class VerifyOTPView(APIView):
-    """POST /api/auth/verify-otp/  — Flutter sends: email, code, purpose"""
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
         serializer = OTPVerifySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
         try:
             user = User.objects.get(email=serializer.validated_data['email'])
         except User.DoesNotExist:
             return Response({"error": "User not found."}, status=404)
-
         ok, error = verify_otp(user, serializer.validated_data['code'], serializer.validated_data['purpose'])
         if not ok:
             return Response({"error": error}, status=400)
-
         if serializer.validated_data['purpose'] == 'email_verify':
             user.is_verified = True
             user.save(update_fields=['is_verified'])
-
         return Response({"message": "OTP verified successfully."})
 
 
 class ResendOTPView(APIView):
-    """POST /api/auth/resend-otp/  — Flutter sends: email, purpose"""
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
@@ -191,7 +190,6 @@ class ResendOTPView(APIView):
 
 
 class ForgotPasswordView(APIView):
-    """POST /api/auth/forgot-password/  — Flutter sends: email"""
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
@@ -209,52 +207,40 @@ class ForgotPasswordView(APIView):
 
 
 class ResetPasswordView(APIView):
-    """
-    POST /api/auth/reset-password/
-    Flutter sends: email, code, new_password   (note: 'code' not 'otp_code')
-    """
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
         email        = request.data.get('email', '')
-        code         = request.data.get('code', '')          # Flutter field name
+        code         = request.data.get('code', '')
         new_password = request.data.get('new_password', '')
-
         if not all([email, code, new_password]):
             return Response({"error": "email, code and new_password are required."}, status=400)
-
         try:
             user = User.objects.get(email=email)
         except User.DoesNotExist:
             return Response({"error": "User not found."}, status=404)
-
         ok, error = verify_otp(user, code, 'forgot_password')
         if not ok:
             return Response({"error": error}, status=400)
-
         user.set_password(new_password)
         user.save(update_fields=['password'])
         return Response({"message": "Password reset successfully."})
 
 
 class ChangePasswordView(APIView):
-    """POST /api/auth/change-password/  — Flutter sends: old_password, new_password"""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         old_password = request.data.get('old_password', '')
         new_password = request.data.get('new_password', '')
-
         if not request.user.check_password(old_password):
             return Response({"error": "Current password is incorrect."}, status=400)
-
         request.user.set_password(new_password)
         request.user.save(update_fields=['password'])
         return Response({"message": "Password changed successfully."})
 
 
 class DeleteAccountView(APIView):
-    """POST /api/auth/delete-account/  — Flutter sends: password"""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
@@ -286,16 +272,151 @@ class UserDetailView(generics.RetrieveAPIView):
     queryset = User.objects.filter(is_active=True)
 
 
+class UserPresenceView(APIView):
+    """
+    PATCH /api/users/me/presence/
+    Profile screen: Online/Away/Offline status toggle.
+    Body: { "presence_status": "online" | "away" | "offline" }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request):
+        presence = request.data.get('presence_status', '')
+        if presence not in ('online', 'away', 'offline'):
+            return Response({"error": "Invalid presence_status. Use: online, away, offline."}, status=400)
+
+        is_online = presence == 'online'
+        last_seen = timezone.now() if not is_online else None
+
+        User.objects.filter(id=request.user.id).update(
+            presence_status=presence,
+            is_online=is_online,
+            last_seen=last_seen,
+        )
+        return Response({"presence_status": presence, "is_online": is_online})
+
+
+class UserPreferencesView(APIView):
+    """
+    PATCH /api/users/me/preferences/
+    Profile screen: theme, accent_color, notification toggles, privacy settings.
+    Body: any combination of preference fields.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    ALLOWED_FIELDS = [
+        'theme', 'accent_color',
+        'notif_messages', 'notif_group_mentions', 'notif_stories', 'notif_calls',
+        'privacy_read_receipts', 'privacy_last_seen', 'privacy_online_status',
+    ]
+
+    def patch(self, request):
+        user = request.user
+        updated = {}
+        for field in self.ALLOWED_FIELDS:
+            if field in request.data:
+                setattr(user, field, request.data[field])
+                updated[field] = request.data[field]
+
+        if not updated:
+            return Response({"error": "No valid preference fields provided."}, status=400)
+
+        user.save(update_fields=list(updated.keys()))
+        return Response({"message": "Preferences updated.", "updated": updated})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HOME SCREEN — Dashboard, Hearings, Legal Updates
+# ══════════════════════════════════════════════════════════════════════════════
+
+class HomeDashboardView(APIView):
+    """
+    GET /api/home/dashboard/
+    Home screen: stats cards + today's hearings + recent updates.
+    Returns:
+      - cases_handled, connections, hearings_today, advocate_rating
+      - todays_hearings (list)
+      - recent_updates (list)
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        today = timezone.now().date()
+
+        # Stats
+        try:
+            profile = user.advocate_profile
+            connection_count = profile.connection_count
+        except AdvocateProfile.DoesNotExist:
+            connection_count = 0
+
+        todays_hearings = Hearing.objects.filter(
+            advocate=user, hearing_date=today
+        ).order_by('hearing_time')
+
+        recent_updates = LegalUpdate.objects.filter(is_active=True)[:5]
+
+        return Response({
+            "cases_handled": user.cases_handled,
+            "connections": connection_count,
+            "hearings_today": todays_hearings.count(),
+            "advocate_rating": float(user.advocate_rating),
+            "todays_hearings": HearingSerializer(todays_hearings, many=True).data,
+            "recent_updates": LegalUpdateSerializer(recent_updates, many=True).data,
+        })
+
+
+class HearingListCreateView(generics.ListCreateAPIView):
+    """
+    GET  /api/hearings/          — list user's hearings (filter: ?date=YYYY-MM-DD)
+    POST /api/hearings/          — create a hearing
+    Home screen: Today's Hearings section
+    """
+    serializer_class = HearingSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        qs = Hearing.objects.filter(advocate=self.request.user)
+        date = self.request.query_params.get('date')
+        if date:
+            qs = qs.filter(hearing_date=date)
+        today_only = self.request.query_params.get('today')
+        if today_only:
+            qs = qs.filter(hearing_date=timezone.now().date())
+        return qs.order_by('hearing_date', 'hearing_time')
+
+    def perform_create(self, serializer):
+        serializer.save(advocate=self.request.user)
+
+
+class HearingDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """GET/PATCH/DELETE /api/hearings/<id>/"""
+    serializer_class = HearingSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self):
+        return get_object_or_404(Hearing, id=self.kwargs['pk'], advocate=self.request.user)
+
+
+class LegalUpdateListView(generics.ListAPIView):
+    """
+    GET /api/legal-updates/
+    Home screen: Recent Updates section.
+    Admin can create via admin panel.
+    """
+    serializer_class = LegalUpdateSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return LegalUpdate.objects.filter(is_active=True)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ADVOCATE PROFILE VIEWS
 # ══════════════════════════════════════════════════════════════════════════════
 
 class AdvocateProfileListView(generics.ListAPIView):
-    """
-    GET /api/advocates/
-    profile_service.searchAdvocates() — query params:
-    name, city, state, practice_area, court, language, min_experience, max_experience, page
-    """
     serializer_class = AdvocateProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
     filterset_class = AdvocateProfileFilter
@@ -312,7 +433,6 @@ class AdvocateProfileListView(generics.ListAPIView):
 
 
 class MyAdvocateProfileView(generics.RetrieveUpdateAPIView):
-    """GET/PATCH /api/advocates/me/"""
     serializer_class = AdvocateProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
@@ -323,43 +443,31 @@ class MyAdvocateProfileView(generics.RetrieveUpdateAPIView):
 
 
 class AdvocateProfileDetailView(generics.RetrieveAPIView):
-    """GET /api/advocates/<user_id>/"""
     serializer_class = AdvocateProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_object(self):
-        # Pehle User fetch karo — agar user hi nahi toh 404 sahi hai
         user = get_object_or_404(User, id=self.kwargs['user_id'], is_active=True)
-        # Profile ensure karo — get_or_create se 404 kabhi nahi aayega
-        # (signal se toh ban hi jaata hai, yeh double safety hai)
         profile, _ = AdvocateProfile.objects.get_or_create(user=user)
         return profile
 
 
 class AdvocateVerificationView(APIView):
-    """
-    POST /api/advocates/verify/
-    Flutter sends: bar_council_id (text), document (file)
-    """
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
         profile, _ = AdvocateProfile.objects.get_or_create(user=request.user)
-
         bar_council_id = request.data.get('bar_council_id', '')
         document       = request.FILES.get('document') or request.FILES.get('bar_council_id_image')
-
         if bar_council_id:
             profile.bar_council_id = bar_council_id
         if document:
             profile.bar_council_id_image = document
         profile.save()
-
         request.user.is_advocate      = True
         request.user.advocate_status  = 'pending'
         request.user.save(update_fields=['is_advocate', 'advocate_status'])
-
         return Response({
             "message": "Verification submitted. Admin will review within 24-48 hours.",
             "status": "pending",
@@ -367,7 +475,6 @@ class AdvocateVerificationView(APIView):
 
 
 class AdvocateEducationViewSet(viewsets.ModelViewSet):
-    """CRUD /api/advocates/education/"""
     serializer_class   = AdvocateEducationSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -381,7 +488,6 @@ class AdvocateEducationViewSet(viewsets.ModelViewSet):
 
 
 class AdvocateExperienceViewSet(viewsets.ModelViewSet):
-    """CRUD /api/advocates/experience/"""
     serializer_class   = AdvocateExperienceSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -395,7 +501,6 @@ class AdvocateExperienceViewSet(viewsets.ModelViewSet):
 
 
 class AdvocateAchievementViewSet(viewsets.ModelViewSet):
-    """CRUD /api/advocates/achievements/"""
     serializer_class   = AdvocateAchievementSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -409,27 +514,14 @@ class AdvocateAchievementViewSet(viewsets.ModelViewSet):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CONNECTIONS  —  profile_service.dart
+# CONNECTIONS
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ConnectionListView(generics.ListAPIView):
-    """
-    GET /api/connections/
-    profile_service.getConnections() — returns accepted connections
-    Also handles ?status=pending&direction=sent (getSentConnections)
-    """
     serializer_class   = ConnectionSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        qs_status = self.request.query_params.get('status')
-        direction = self.request.query_params.get('direction')
-
-        if qs_status == 'pending' and direction == 'sent':
-            return Connection.objects.filter(
-                sender=self.request.user, status='pending'
-            ).select_related('sender', 'receiver')
-
         return Connection.objects.filter(
             Q(sender=self.request.user) | Q(receiver=self.request.user),
             status='accepted'
@@ -437,81 +529,54 @@ class ConnectionListView(generics.ListAPIView):
 
 
 class PendingConnectionsView(generics.ListAPIView):
-    """GET /api/connections/pending/  — profile_service.getPendingConnections()"""
     serializer_class   = ConnectionSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         return Connection.objects.filter(
             receiver=self.request.user, status='pending'
-        ).select_related('sender', 'receiver')
+        ).select_related('sender')
 
 
 class SendConnectionRequestView(APIView):
-    """
-    POST /api/connections/send/
-    Flutter profile_service.sendConnectionRequest() sends:
-      receiver_id (not 'receiver'), optional message
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        # Flutter sends receiver_id — map to our model field
-        receiver_id = request.data.get('receiver_id') or request.data.get('receiver')
-        message     = request.data.get('message', '')
-
-        if not receiver_id:
-            return Response({"error": "receiver_id is required."}, status=400)
-
+        serializer = ConnectionRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        receiver_id = serializer.validated_data['receiver'].id if hasattr(serializer.validated_data['receiver'], 'id') else serializer.validated_data['receiver']
         receiver = get_object_or_404(User, id=receiver_id, is_active=True)
 
         if receiver == request.user:
-            return Response({"error": "You cannot connect with yourself."}, status=400)
+            return Response({"error": "Cannot send request to yourself."}, status=400)
 
-        existing = Connection.objects.filter(
-            Q(sender=request.user, receiver=receiver) |
-            Q(sender=receiver, receiver=request.user)
-        ).first()
+        conn, created = Connection.objects.get_or_create(
+            sender=request.user, receiver=receiver,
+            defaults={'message': serializer.validated_data.get('message', '')}
+        )
+        if not created:
+            return Response({"error": "Connection request already sent."}, status=400)
 
-        if existing:
-            return Response({"error": f"Connection already exists: {existing.status}"}, status=400)
-
-        conn = Connection.objects.create(sender=request.user, receiver=receiver, message=message)
-
+        send_connection_request_email(request.user, receiver)
         create_notification(
-            recipient=receiver,
-            notif_type='connection_request',
+            recipient=receiver, notif_type='connection_request',
             title='New Connection Request',
             body=f"{request.user.full_name} sent you a connection request.",
             sender=request.user,
-            data={'connection_id': str(conn.id)},
         )
-        try:
-            send_connection_request_email(request.user, receiver)
-        except Exception:
-            pass
-
-        return Response({"message": "Connection request sent.", "id": str(conn.id)}, status=201)
+        return Response(ConnectionSerializer(conn, context={'request': request}).data, status=201)
 
 
 class ConnectionDetailView(APIView):
-    """
-    PATCH /api/connections/<id>/   — respondToConnection (status: accepted/rejected)
-    DELETE /api/connections/<id>/  — removeConnection
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def patch(self, request, pk):
         new_status = request.data.get('status', '')
         connection = get_object_or_404(Connection, id=pk)
-
-        # Only receiver can accept/reject; sender can withdraw
         if new_status in ('accepted', 'rejected') and connection.receiver != request.user:
             return Response({"error": "Only the receiver can accept/reject."}, status=403)
-
         connection.status = new_status
         connection.save(update_fields=['status', 'updated_at'])
-
         if new_status == 'accepted':
             self._bump_connection_counts(connection)
             create_notification(
@@ -521,7 +586,6 @@ class ConnectionDetailView(APIView):
                 body=f"{request.user.full_name} accepted your connection request.",
                 sender=request.user,
             )
-
         return Response(ConnectionSerializer(connection, context={'request': request}).data)
 
     def delete(self, request, pk):
@@ -555,27 +619,20 @@ class ConnectionDetailView(APIView):
 
 
 class FollowView(APIView):
-    """
-    POST   /api/follow/<user_id>/  — followUser
-    DELETE /api/follow/<user_id>/  — unfollowUser
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, user_id):
         target = get_object_or_404(User, id=user_id, is_active=True)
         if target == request.user:
             return Response({"error": "Cannot follow yourself."}, status=400)
-
         _, created = Follow.objects.get_or_create(follower=request.user, following=target)
         if not created:
             return Response({"error": "Already following."}, status=400)
-
         try:
             target.advocate_profile.follower_count += 1
             target.advocate_profile.save(update_fields=['follower_count'])
         except AdvocateProfile.DoesNotExist:
             pass
-
         create_notification(
             recipient=target, notif_type='follow',
             title='New Follower',
@@ -597,7 +654,10 @@ class FollowView(APIView):
 
 
 class SuggestedAdvocatesView(generics.ListAPIView):
-    """GET /api/network/suggested/"""
+    """
+    GET /api/network/suggested/
+    Feed screen: People to Follow sidebar.
+    """
     serializer_class   = AdvocateProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -616,34 +676,69 @@ class SuggestedAdvocatesView(generics.ListAPIView):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CHAT / MESSAGING  —  chat_service.dart
+# CHAT / MESSAGING
+# Chat screen: All/Direct/Groups/Pinned tabs, pin/unpin chat
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ChatRoomListView(generics.ListAPIView):
-    """GET /api/chat/rooms/"""
+    """
+    GET /api/chat/rooms/
+    Supports ?tab=direct|group|pinned to filter tabs.
+    """
     serializer_class   = ChatRoomSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return ChatRoom.objects.filter(
+        tab = self.request.query_params.get('tab', 'all')
+        qs = ChatRoom.objects.filter(
             room_participants__user=self.request.user
-        ).prefetch_related('room_participants__user', 'messages').distinct().order_by('-updated_at')
+        ).prefetch_related('room_participants__user', 'messages').distinct()
+
+        if tab == 'direct':
+            qs = qs.filter(room_type='direct')
+        elif tab == 'group':
+            qs = qs.filter(room_type='group')
+        elif tab == 'pinned':
+            # Only rooms pinned by current user
+            qs = qs.filter(room_participants__user=self.request.user,
+                           room_participants__is_pinned=True)
+
+        return qs.order_by('-updated_at')
+
+
+class PinChatView(APIView):
+    """
+    POST   /api/chat/rooms/<room_id>/pin/    — pin a chat (Pinned tab)
+    DELETE /api/chat/rooms/<room_id>/pin/    — unpin a chat
+    Chat screen: Pinned tab
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, room_id):
+        participant = get_object_or_404(
+            ChatParticipant, room_id=room_id, user=request.user
+        )
+        participant.is_pinned = True
+        participant.save(update_fields=['is_pinned'])
+        return Response({"message": "Chat pinned.", "is_pinned": True})
+
+    def delete(self, request, room_id):
+        participant = get_object_or_404(
+            ChatParticipant, room_id=room_id, user=request.user
+        )
+        participant.is_pinned = False
+        participant.save(update_fields=['is_pinned'])
+        return Response({"message": "Chat unpinned.", "is_pinned": False})
 
 
 class CreateDirectChatView(APIView):
-    """
-    POST /api/chat/rooms/direct/
-    Flutter: getOrCreateDirect(userId) sends { user_id: userId }
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         serializer = CreateDirectChatSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
         other = get_object_or_404(User, id=serializer.validated_data['user_id'], is_active=True)
         room, created = get_direct_room(request.user, other)
-
         return Response(
             ChatRoomSerializer(room, context={'request': request}).data,
             status=201 if created else 200,
@@ -651,17 +746,12 @@ class CreateDirectChatView(APIView):
 
 
 class CreateGroupChatView(APIView):
-    """
-    POST /api/chat/rooms/group/
-    Flutter: createGroup() sends { name, participant_ids: [...] }
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         serializer = CreateGroupChatSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-
         room = ChatRoom.objects.create(
             room_type='group',
             name=data['name'],
@@ -669,20 +759,14 @@ class CreateGroupChatView(APIView):
             created_by=request.user,
         )
         ChatParticipant.objects.create(room=room, user=request.user, role='admin')
-
         users = User.objects.filter(id__in=data['participant_ids'], is_active=True)
         for u in users:
             if u != request.user:
                 ChatParticipant.objects.create(room=room, user=u)
-
         return Response(ChatRoomSerializer(room, context={'request': request}).data, status=201)
 
 
 class MessageListCreateView(APIView):
-    """
-    GET  /api/chat/rooms/<room_id>/messages/  — getMessages
-    POST /api/chat/rooms/<room_id>/messages/  — sendFileMessage (multipart)
-    """
     permission_classes = [permissions.IsAuthenticated]
     parser_classes     = [MultiPartParser, FormParser, JSONParser]
 
@@ -694,25 +778,19 @@ class MessageListCreateView(APIView):
         total = messages.count()
         start = (page - 1) * page_size
         messages = messages[start: start + page_size]
-
-        # Update last_read
         ChatParticipant.objects.filter(room=room, user=request.user).update(last_read_at=timezone.now())
-
         return Response({
             "count": total,
             "results": MessageSerializer(messages, many=True, context={'request': request}).data,
         })
 
     def post(self, request, room_id):
-        """sendFileMessage — multipart: message_type + file"""
         room = get_object_or_404(ChatRoom, id=room_id, room_participants__user=request.user)
-
         file         = request.FILES.get('file')
         content      = request.data.get('content', '')
         msg_type     = request.data.get('message_type', 'text' if not file else get_file_type(file))
         reply_to_id  = request.data.get('reply_to')
         reply_to     = Message.objects.filter(id=reply_to_id, room=room).first() if reply_to_id else None
-
         msg = Message.objects.create(
             room=room, sender=request.user,
             message_type=msg_type, content=content,
@@ -723,15 +801,10 @@ class MessageListCreateView(APIView):
         )
         room.updated_at = timezone.now()
         room.save(update_fields=['updated_at'])
-
         return Response(MessageSerializer(msg, context={'request': request}).data, status=201)
 
 
 class MessageDetailView(APIView):
-    """
-    PATCH  /api/chat/messages/<id>/  — editMessage sends { content }
-    DELETE /api/chat/messages/<id>/  — deleteMessage
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def patch(self, request, pk):
@@ -754,7 +827,6 @@ class MessageDetailView(APIView):
 
 
 class MarkMessagesReadView(APIView):
-    """POST /api/chat/rooms/<room_id>/read/"""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, room_id):
@@ -766,14 +838,11 @@ class MarkMessagesReadView(APIView):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CHANNELS  —  channel_service.dart
+# CHANNELS
+# Channel screen: list with sub-channels, pinned banner, sub-channel posts
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ChannelListView(generics.ListAPIView):
-    """
-    GET /api/channels/
-    channel_service.getChannels() — query: channel_type, city, state, is_official
-    """
     serializer_class   = ChannelSerializer
     permission_classes = [permissions.IsAuthenticated]
     filterset_class    = ChannelFilter
@@ -782,28 +851,25 @@ class ChannelListView(generics.ListAPIView):
     ordering           = ['-member_count']
 
     def get_queryset(self):
-        return Channel.objects.filter(is_private=False)
+        return Channel.objects.filter(is_private=False).prefetch_related('sub_channels')
 
 
 class MyChannelsView(generics.ListAPIView):
-    """GET /api/channels/mine/"""
     serializer_class   = ChannelSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return Channel.objects.filter(memberships__user=self.request.user)
+        return Channel.objects.filter(memberships__user=self.request.user).prefetch_related('sub_channels')
 
 
 class ChannelDetailView(generics.RetrieveAPIView):
-    """GET /api/channels/<id>/"""
     serializer_class   = ChannelSerializer
     permission_classes = [permissions.IsAuthenticated]
-    queryset           = Channel.objects.all()
+    queryset           = Channel.objects.prefetch_related('sub_channels')
     lookup_field       = 'id'
 
 
 class CreateChannelView(generics.CreateAPIView):
-    """POST /api/channels/create/"""
     serializer_class   = ChannelSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -820,7 +886,6 @@ class CreateChannelView(generics.CreateAPIView):
 
 
 class JoinChannelView(APIView):
-    """POST /api/channels/<pk>/join/"""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
@@ -834,7 +899,6 @@ class JoinChannelView(APIView):
 
 
 class LeaveChannelView(APIView):
-    """DELETE /api/channels/<pk>/leave/"""
     permission_classes = [permissions.IsAuthenticated]
 
     def delete(self, request, pk):
@@ -846,11 +910,41 @@ class LeaveChannelView(APIView):
         return Response(status=204)
 
 
+class SubChannelListCreateView(generics.ListCreateAPIView):
+    """
+    GET  /api/channels/<channel_id>/sub-channels/   — list sub-channels
+    POST /api/channels/<channel_id>/sub-channels/   — create sub-channel (admin only)
+    Channel screen: sub-channel list (Daily Cause List, Latest Judgments, etc.)
+    """
+    serializer_class   = SubChannelSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        channel = get_object_or_404(Channel, id=self.kwargs['channel_id'])
+        return SubChannel.objects.filter(parent=channel, is_active=True)
+
+    def perform_create(self, serializer):
+        channel = get_object_or_404(Channel, id=self.kwargs['channel_id'])
+        # Only channel admin can create sub-channels
+        membership = ChannelMembership.objects.filter(
+            channel=channel, user=self.request.user, role='admin'
+        ).first()
+        if not membership:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Only channel admins can create sub-channels.")
+        name = serializer.validated_data.get('name', '')
+        slug = slugify(name)
+        base_slug, counter = slug, 1
+        while SubChannel.objects.filter(parent=channel, slug=slug).exists():
+            slug = f"{base_slug}-{counter}"; counter += 1
+        serializer.save(parent=channel, slug=slug)
+
+
 class ChannelPostListCreateView(generics.ListCreateAPIView):
     """
-    GET  /api/channels/<channel_id>/posts/  — getChannelPosts
-    POST /api/channels/<channel_id>/posts/  — createChannelPost
-    Flutter POST sends: content (text) + optional attachment (file)
+    GET  /api/channels/<channel_id>/posts/
+    POST /api/channels/<channel_id>/posts/
+    Supports ?sub_channel=<id> to filter by sub-channel.
     """
     serializer_class   = ChannelPostSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -858,7 +952,11 @@ class ChannelPostListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         channel = get_object_or_404(Channel, id=self.kwargs['channel_id'])
-        return ChannelPost.objects.filter(channel=channel).select_related('author')
+        qs = ChannelPost.objects.filter(channel=channel).select_related('author')
+        sub_channel_id = self.request.query_params.get('sub_channel')
+        if sub_channel_id:
+            qs = qs.filter(sub_channel_id=sub_channel_id)
+        return qs
 
     def perform_create(self, serializer):
         channel = get_object_or_404(
@@ -866,15 +964,19 @@ class ChannelPostListCreateView(generics.ListCreateAPIView):
             memberships__user=self.request.user,
         )
         attachment = self.request.FILES.get('attachment')
-        att_type   = ''
-        if attachment:
-            att_type = get_file_type(attachment)
-        serializer.save(author=self.request.user, channel=channel,
-                        attachment=attachment, attachment_type=att_type)
+        att_type   = get_file_type(attachment) if attachment else ''
+        sub_channel_id = self.request.data.get('sub_channel')
+        sub_channel = None
+        if sub_channel_id:
+            sub_channel = SubChannel.objects.filter(id=sub_channel_id, parent=channel).first()
+        serializer.save(
+            author=self.request.user, channel=channel,
+            attachment=attachment, attachment_type=att_type,
+            sub_channel=sub_channel,
+        )
 
 
 class ChannelPostLikeView(APIView):
-    """POST /api/channels/posts/<pk>/like/  — likeChannelPost (toggle)"""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
@@ -891,10 +993,6 @@ class ChannelPostLikeView(APIView):
 
 
 class ChannelPostCommentView(generics.ListCreateAPIView):
-    """
-    GET/POST /api/channels/posts/<post_id>/comments/
-    Flutter: addChannelComment sends: content, optional parent (parentId)
-    """
     serializer_class   = ChannelPostCommentSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -911,14 +1009,26 @@ class ChannelPostCommentView(generics.ListCreateAPIView):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# COMMUNITY FEED  —  post_service.dart
-# Flutter uses /feed/ for everything (get, create, delete, react, comments)
+# COMMUNITY FEED
+# Feed screen: hashtags, trending, save/share, post types
 # ══════════════════════════════════════════════════════════════════════════════
+
+class TrendingHashtagsView(generics.ListAPIView):
+    """
+    GET /api/feed/trending/
+    Feed screen: Trending Now section (top 10 hashtags by post count).
+    """
+    serializer_class   = HashtagSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return Hashtag.objects.order_by('-post_count')[:10]
+
 
 class FeedListCreateView(generics.ListCreateAPIView):
     """
-    GET  /api/feed/  — getFeed (post_type filter, page)
-    POST /api/feed/  — createPost (content, post_type, media file, is_public)
+    GET  /api/feed/   — home feed
+    POST /api/feed/   — create post (content, post_type, media, is_public, hashtag_names)
     """
     serializer_class   = PostSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -930,26 +1040,90 @@ class FeedListCreateView(generics.ListCreateAPIView):
             Q(sender=self.request.user) | Q(receiver=self.request.user),
             status='accepted',
         ).values_list('sender_id', 'receiver_id')
+
         ids = set()
+
         for s, r in connected:
-            ids.add(s); ids.add(r)
+            ids.add(s)
+            ids.add(r)
+
         ids.add(self.request.user.id)
 
-        return Post.objects.filter(
+        # Hashtag filter
+        hashtag = self.request.query_params.get('hashtag')
+
+        qs = Post.objects.filter(
             Q(author_id__in=ids) | Q(is_public=True)
         ).select_related('author').distinct().order_by('-created_at')
 
+        if hashtag:
+            qs = qs.filter(
+                hashtags__name__iexact=hashtag.lstrip('#')
+            )
+
+        return qs
+
     def perform_create(self, serializer):
-        file       = self.request.FILES.get('media')
+
+        file = self.request.FILES.get('media')
         media_type = get_file_type(file) if file else ''
-        serializer.save(author=self.request.user, media=file, media_type=media_type)
+
+        post = serializer.save(
+            author=self.request.user,
+            media=file,
+            media_type=media_type
+        )
+
+        # -------------------------
+        # Handle hashtags safely
+        # -------------------------
+        data = self.request.data
+
+        if hasattr(data, 'getlist'):
+            hashtag_names = data.getlist('hashtag_names[]')
+        else:
+            hashtag_names = data.get('hashtag_names', [])
+
+        # fallback from serializer
+        if not hashtag_names:
+            hashtag_names = serializer.validated_data.get(
+                'hashtag_names',
+                []
+            )
+
+        # convert string -> list
+        if isinstance(hashtag_names, str):
+            hashtag_names = [hashtag_names]
+
+        # Attach hashtags
+        for name in hashtag_names:
+
+            if not isinstance(name, str):
+                continue
+
+            name = name.strip().lstrip('#').lower()
+
+            if name:
+                tag, created = Hashtag.objects.get_or_create(name=name)
+
+                post.hashtags.add(tag)
+
+                tag.post_count += 1
+                tag.save(update_fields=['post_count'])
+
+        # -------------------------
+        # Update author post count
+        # -------------------------
+        try:
+            profile = post.author.advocate_profile
+            profile.post_count += 1
+            profile.save(update_fields=['post_count'])
+
+        except AdvocateProfile.DoesNotExist:
+            pass
 
 
 class PostDetailView(APIView):
-    """
-    DELETE /api/feed/<pk>/   — deletePost
-    GET    /api/feed/<pk>/   — single post
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk):
@@ -963,20 +1137,14 @@ class PostDetailView(APIView):
 
 
 class PostReactView(APIView):
-    """
-    POST   /api/feed/<pk>/react/  — reactToPost sends { reaction_type }
-    DELETE /api/feed/<pk>/react/  — removeReaction
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
         post          = get_object_or_404(Post, id=pk)
         reaction_type = request.data.get('reaction_type', 'like')
-
         existing = PostReaction.objects.filter(post=post, user=request.user).first()
         if existing:
             if existing.reaction_type == reaction_type:
-                # Same reaction → toggle off
                 existing.delete()
                 post.like_count = max(0, post.like_count - 1)
                 post.save(update_fields=['like_count'])
@@ -984,7 +1152,6 @@ class PostReactView(APIView):
             existing.reaction_type = reaction_type
             existing.save()
             return Response({"reacted": True, "type": reaction_type, "like_count": post.like_count})
-
         PostReaction.objects.create(post=post, user=request.user, reaction_type=reaction_type)
         post.like_count += 1
         post.save(update_fields=['like_count'])
@@ -1000,10 +1167,6 @@ class PostReactView(APIView):
 
 
 class PostCommentView(generics.ListCreateAPIView):
-    """
-    GET  /api/feed/<post_id>/comments/  — getComments
-    POST /api/feed/<post_id>/comments/  — addComment sends: content, optional parent (parentId)
-    """
     serializer_class   = PostCommentSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -1017,7 +1180,6 @@ class PostCommentView(generics.ListCreateAPIView):
         serializer.save(author=self.request.user, post=post)
         post.comment_count += 1
         post.save(update_fields=['comment_count'])
-
         if post.author != self.request.user:
             create_notification(
                 recipient=post.author, notif_type='comment',
@@ -1028,12 +1190,58 @@ class PostCommentView(generics.ListCreateAPIView):
             )
 
 
+class SavePostView(APIView):
+    """
+    POST   /api/feed/<pk>/save/   — save a post (Feed: Save button)
+    DELETE /api/feed/<pk>/save/   — unsave a post
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        post = get_object_or_404(Post, id=pk)
+        _, created = SavedPost.objects.get_or_create(user=request.user, post=post)
+        if not created:
+            return Response({"error": "Post already saved."}, status=400)
+        return Response({"saved": True, "message": "Post saved."}, status=201)
+
+    def delete(self, request, pk):
+        post = get_object_or_404(Post, id=pk)
+        SavedPost.objects.filter(user=request.user, post=post).delete()
+        return Response({"saved": False, "message": "Post unsaved."})
+
+
+class SavedPostListView(generics.ListAPIView):
+    """
+    GET /api/feed/saved/   — list user's saved posts
+    """
+    serializer_class   = PostSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        saved_ids = SavedPost.objects.filter(user=self.request.user).values_list('post_id', flat=True)
+        return Post.objects.filter(id__in=saved_ids).select_related('author').order_by('-created_at')
+
+
+class SharePostView(APIView):
+    """
+    POST /api/feed/<pk>/share/   — record a share (Feed: Share button)
+    Increments share_count on the post.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        post = get_object_or_404(Post, id=pk)
+        PostShare.objects.create(user=request.user, post=post)
+        post.share_count += 1
+        post.save(update_fields=['share_count'])
+        return Response({"shared": True, "share_count": post.share_count})
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-# NOTIFICATIONS  —  notification_service.dart
+# NOTIFICATIONS
 # ══════════════════════════════════════════════════════════════════════════════
 
 class NotificationListView(generics.ListAPIView):
-    """GET /api/notifications/  — getNotifications (page)"""
     serializer_class   = NotificationSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -1044,7 +1252,6 @@ class NotificationListView(generics.ListAPIView):
 
 
 class UnreadNotificationCountView(APIView):
-    """GET /api/notifications/unread-count/  — getUnreadCount → { unread_count }"""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
@@ -1053,7 +1260,6 @@ class UnreadNotificationCountView(APIView):
 
 
 class MarkNotificationReadView(APIView):
-    """POST /api/notifications/<pk>/read/  — markRead"""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
@@ -1064,7 +1270,6 @@ class MarkNotificationReadView(APIView):
 
 
 class MarkAllNotificationsReadView(APIView):
-    """POST /api/notifications/read-all/  — markAllRead"""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
@@ -1204,20 +1409,15 @@ class AdminVerifyAdvocateView(APIView):
         user       = get_object_or_404(User, id=user_id, advocate_status='pending')
         serializer = AdminAdvocateVerifySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
         new_status = serializer.validated_data['status']
         notes      = serializer.validated_data.get('admin_notes', '')
-
         user.advocate_status = new_status
         user.save(update_fields=['advocate_status'])
-
         send_verification_status_email(user, new_status, notes)
-
         notif_type = 'verification_approved' if new_status == 'approved' else 'verification_rejected'
         title      = '✅ Verification Approved!' if new_status == 'approved' else 'Verification Update'
         body       = "Your advocate profile is verified!" if new_status == 'approved' else f"Not approved: {notes}"
         create_notification(recipient=user, notif_type=notif_type, title=title, body=body)
-
         return Response({"message": f"Advocate {new_status}.", "user_id": str(user.id), "status": new_status})
 
 
@@ -1254,12 +1454,14 @@ class AdminAnalyticsView(APIView):
         return Response({
             "total_users":        User.objects.count(),
             "active_users":       User.objects.filter(is_active=True).count(),
+            "online_users":       User.objects.filter(is_online=True).count(),
             "advocates_total":    User.objects.filter(is_advocate=True).count(),
             "advocates_pending":  User.objects.filter(advocate_status='pending').count(),
             "advocates_approved": User.objects.filter(advocate_status='approved').count(),
             "total_posts":        Post.objects.count(),
             "total_channels":     Channel.objects.count(),
             "total_messages":     Message.objects.count(),
+            "total_hearings":     Hearing.objects.count(),
             "new_users_30d":      User.objects.filter(date_joined__gte=last30).count(),
             "new_posts_30d":      Post.objects.filter(created_at__gte=last30).count(),
             "pending_reports":    Report.objects.filter(status='pending').count(),
@@ -1270,3 +1472,13 @@ class AdminChannelListView(generics.ListAPIView):
     serializer_class   = ChannelSerializer
     permission_classes = [permissions.IsAdminUser]
     queryset           = Channel.objects.all().order_by('-created_at')
+
+
+class AdminLegalUpdateView(generics.ListCreateAPIView):
+    """
+    Admin: Create/list legal updates for home screen Recent Updates.
+    GET/POST /api/admin/legal-updates/
+    """
+    serializer_class   = LegalUpdateSerializer
+    permission_classes = [permissions.IsAdminUser]
+    queryset           = LegalUpdate.objects.all().order_by('-created_at')
