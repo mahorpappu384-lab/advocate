@@ -442,6 +442,83 @@ class MyAdvocateProfileView(generics.RetrieveUpdateAPIView):
         return profile
 
 
+class AdvocateOnboardingView(APIView):
+    """
+    POST/PATCH /api/advocates/me/onboarding/
+
+    Pehli baar login ke baad advocate apna basic profile fill karta hai.
+    Ek hi request mein User.bio + AdvocateProfile fields + onboarding_complete = True set hota hai.
+
+    Expected payload:
+    {
+        "primary_court": "district_court",
+        "practice_areas": ["criminal", "civil"],
+        "experience_years": 5,
+        "cases_handled": 120,
+        "bar_enrollment_no": "MAH/1234/2019",
+        "bio": "Experienced criminal lawyer..."
+    }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        return self._handle(request)
+
+    def patch(self, request):
+        return self._handle(request)
+
+    def _handle(self, request):
+        user = request.user
+        data = request.data
+
+        # 1. Bio update — User model pe
+        bio = data.get('bio', '').strip()
+        if bio:
+            # bio User model mein nahi hai — AdvocateProfile mein store karo
+            pass  # neeche profile pe set hoga
+
+        # 2. AdvocateProfile update
+        profile, _ = AdvocateProfile.objects.get_or_create(user=user)
+
+        if data.get('primary_court'):
+            profile.primary_court = data['primary_court']
+
+        if data.get('practice_areas') is not None:
+            areas = data.get('practice_areas')
+            if isinstance(areas, str):
+                import json
+                try:
+                    areas = json.loads(areas)
+                except (ValueError, TypeError):
+                    areas = [areas]
+            profile.specializations = areas
+
+        if data.get('experience_years') is not None:
+            profile.years_of_experience = int(data['experience_years'])
+
+        if data.get('bar_enrollment_no'):
+            profile.enrollment_number = data['bar_enrollment_no']
+
+        if bio:
+            profile.bio = bio
+
+        profile.onboarding_complete = True
+        profile.save(update_fields=[
+            'primary_court', 'specializations', 'years_of_experience',
+            'enrollment_number', 'bio', 'onboarding_complete',
+        ])
+
+        # 3. cases_handled — User model pe hai
+        if data.get('cases_handled') is not None:
+            user.cases_handled = int(data['cases_handled'])
+            user.save(update_fields=['cases_handled'])
+
+        return Response({
+            'message': 'Onboarding complete!',
+            'onboarding_complete': True,
+        }, status=status.HTTP_200_OK)
+
+
 class AdvocateProfileDetailView(generics.RetrieveAPIView):
     serializer_class = AdvocateProfileSerializer
     permission_classes = [permissions.IsAuthenticated]

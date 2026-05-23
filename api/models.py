@@ -195,6 +195,9 @@ class AdvocateProfile(models.Model):
     years_of_experience = models.PositiveIntegerField(default=0)
     specializations = models.JSONField(default=list, blank=True)
     courts_practiced = models.JSONField(default=list, blank=True)
+    # Primary court — onboarding step 1 mein select hota hai
+    primary_court = models.CharField(max_length=50, blank=True,
+                                     choices=COURTS, default='')
     languages_known = models.JSONField(default=list, blank=True)
 
     # Location
@@ -212,6 +215,9 @@ class AdvocateProfile(models.Model):
     # Privacy
     is_public = models.BooleanField(default=True)
     show_contact = models.BooleanField(default=True)
+
+    # Onboarding — pehli baar login ke baad profile setup complete hua ya nahi
+    onboarding_complete = models.BooleanField(default=False)
 
     # Stats (cached) — Home screen stats cards + Profile screen
     connection_count = models.PositiveIntegerField(default=0)

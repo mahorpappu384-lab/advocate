@@ -68,6 +68,7 @@ urlpatterns = [
     # ══════════════════════════════════════════════════════════════════════════
     path('advocates/',                     views.AdvocateProfileListView.as_view(),  name='advocate-list'),
     path('advocates/me/',                  views.MyAdvocateProfileView.as_view(),    name='my-advocate-profile'),
+    path('advocates/me/onboarding/',       views.AdvocateOnboardingView.as_view(),   name='advocate-onboarding'),
     path('advocates/verify/',              views.AdvocateVerificationView.as_view(), name='advocate-verify'),
     path('advocates/<uuid:user_id>/',      views.AdvocateProfileDetailView.as_view(),name='advocate-detail'),
 

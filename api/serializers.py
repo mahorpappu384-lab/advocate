@@ -133,6 +133,15 @@ class UserMiniSerializer(serializers.ModelSerializer):
 
 class UserProfileSerializer(serializers.ModelSerializer):
     """Full user profile — /api/users/me/ and /api/users/<id>/"""
+    # AdvocateProfile se liya gaya — Flutter onboarding redirect ke liye
+    onboarding_complete = serializers.SerializerMethodField()
+
+    def get_onboarding_complete(self, obj):
+        try:
+            return obj.advocate_profile.onboarding_complete
+        except AdvocateProfile.DoesNotExist:
+            return False
+
     class Meta:
         model = User
         fields = [
@@ -149,6 +158,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'privacy_read_receipts', 'privacy_last_seen', 'privacy_online_status',
             # Home stats
             'cases_handled', 'advocate_rating',
+            # Onboarding check — AdvocateProfile se computed
+            'onboarding_complete',
         ]
         read_only_fields = ['id', 'username', 'email', 'is_verified',
                             'advocate_status', 'date_joined']
