@@ -101,12 +101,21 @@ class RegisterView(generics.CreateAPIView):
         user.is_verified = True
         user.save(update_fields=['is_verified'])
 
+        # JWT tokens generate karo taaki Flutter seedha auto-login kar sake
+        # OTP step hataya gaya — registration ke baad direct login
+        from rest_framework_simplejwt.tokens import RefreshToken
+        refresh = RefreshToken.for_user(user)
+
         return Response({
             "message": "Account created successfully!",
             "user_id": str(user.id),
             "email": user.email,
             "username": user.username,
             "is_verified": True,
+            # Tokens — Flutter in se auto-login karega
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+            "onboarding_complete": False,   # Naya user — onboarding pending
         }, status=status.HTTP_201_CREATED)
 
 
@@ -120,6 +129,13 @@ class LoginView(TokenObtainPairView):
             username = request.data.get('username', '').lower()
             try:
                 user = User.objects.get(username=username)
+                # onboarding_complete — AdvocateProfile se safe fetch
+                onboarding_complete = False
+                try:
+                    onboarding_complete = user.advocate_profile.onboarding_complete
+                except Exception:
+                    onboarding_complete = False
+
                 response.data['user'] = {
                     'id': str(user.id),
                     'username': user.username,
@@ -132,6 +148,7 @@ class LoginView(TokenObtainPairView):
                     'presence_status': user.presence_status,
                     'theme': user.theme,
                     'accent_color': user.accent_color,
+                    'onboarding_complete': onboarding_complete,  # ← Flutter routing ke liye
                 }
             except User.DoesNotExist:
                 pass
