@@ -519,11 +519,23 @@ class AdvocateOnboardingView(APIView):
         if bio:
             profile.bio = bio
 
+        # City + State — onboarding step 5
+        if data.get('city'):
+            profile.city = data['city'].strip()
+        if data.get('state'):
+            profile.state = data['state'].strip()
+
+        # Profile photo URL — Cloudinary se direct upload, backend ko URL milta hai
+        if data.get('profile_photo_url'):
+            profile.profile_photo = data['profile_photo_url']
+
         profile.onboarding_complete = True
-        profile.save(update_fields=[
+        update_fields = [
             'primary_court', 'specializations', 'years_of_experience',
             'enrollment_number', 'bio', 'onboarding_complete',
-        ])
+            'city', 'state', 'profile_photo',
+        ]
+        profile.save(update_fields=update_fields)
 
         # 3. cases_handled — User model pe hai
         if data.get('cases_handled') is not None:
