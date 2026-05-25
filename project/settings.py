@@ -107,11 +107,8 @@ CACHES = {
 }
 
 CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels_redis.core.RedisChannelLayer',
-        'CONFIG': {
-            'hosts': [REDIS_URL],
-        },
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
     },
 }
 

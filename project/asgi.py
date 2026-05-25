@@ -12,9 +12,7 @@ from api.routing import websocket_urlpatterns
 
 application = ProtocolTypeRouter({
     "http": django_asgi_app,
-    "websocket": AllowedHostsOriginValidator(
-        AuthMiddlewareStack(
-            URLRouter(websocket_urlpatterns)
-        )
-    ),
+    "websocket": AuthMiddlewareStack(
+    URLRouter(websocket_urlpatterns)
+),
 })
