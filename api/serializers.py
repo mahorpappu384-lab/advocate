@@ -107,24 +107,32 @@ class ChangePasswordSerializer(serializers.Serializer):
 
 class UserMiniSerializer(serializers.ModelSerializer):
     """Minimal user info — embedded in posts, messages, channels."""
+    
     profile_photo = serializers.SerializerMethodField()
     is_advocate_verified = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ['id', 'full_name', 'username', 'email', 'is_advocate',
-                  'advocate_status', 'profile_photo', 'is_advocate_verified',
-                  'presence_status', 'is_online']
+        fields = [
+            'id',
+            'full_name',
+            'username',
+            'email',
+            'is_advocate',
+            'advocate_status',
+            'profile_photo',
+            'is_advocate_verified',
+            'presence_status',
+            'is_online'
+        ]
 
     def get_profile_photo(self, obj):
         try:
-            request = self.context.get('request')
             if obj.advocate_profile.profile_photo:
-                if request:
-                    return request.build_absolute_uri(obj.advocate_profile.profile_photo.url)
-                return obj.advocate_profile.profile_photo.url
+                return obj.advocate_profile.profile_photo
         except AdvocateProfile.DoesNotExist:
             pass
+
         return None
 
     def get_is_advocate_verified(self, obj):

@@ -147,7 +147,7 @@ REST_FRAMEWORK = {
 # ─── JWT Config ───────────────────────────────────────────────────────────────
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(
-        minutes=config('JWT_ACCESS_TOKEN_LIFETIME_MINUTES', default=6000, cast=int)
+        minutes=config('JWT_ACCESS_TOKEN_LIFETIME_MINUTES', default=10080, cast=int)
     ),
     'REFRESH_TOKEN_LIFETIME': timedelta(
         days=config('JWT_REFRESH_TOKEN_LIFETIME_DAYS', default=30, cast=int)
@@ -170,7 +170,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:8000",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "http://localhost:8080",
+    "http://localhost:57080",
     "https://magic-salon-admin.netlify.app",
 ]
 CORS_ALLOW_CREDENTIALS = True
