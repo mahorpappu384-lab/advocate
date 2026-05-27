@@ -442,9 +442,10 @@ class AdvocateProfileListView(generics.ListAPIView):
     ordering = ['-connection_count']
 
     def get_queryset(self):
+        # advocate_status='approved' filter hataya — naye registered users bhi
+        # search mein dikhne chahiye, sirf active aur public profiles
         return AdvocateProfile.objects.filter(
             user__is_active=True,
-            user__advocate_status='approved',
             is_public=True,
         ).select_related('user').prefetch_related('education', 'experience', 'achievements')
 
