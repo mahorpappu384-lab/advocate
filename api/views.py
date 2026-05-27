@@ -651,19 +651,27 @@ class SendConnectionRequestView(APIView):
     def post(self, request):
         serializer = ConnectionRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        receiver_id = serializer.validated_data['receiver'].id if hasattr(serializer.validated_data['receiver'], 'id') else serializer.validated_data['receiver']
+        receiver_id = serializer.validated_data['receiver_id']
         receiver = get_object_or_404(User, id=receiver_id, is_active=True)
 
         if receiver == request.user:
             return Response({"error": "Cannot send request to yourself."}, status=400)
 
-        conn, created = Connection.objects.get_or_create(
-            sender=request.user, receiver=receiver,
-            defaults={'message': serializer.validated_data.get('message', '')}
-        )
-        if not created:
+        # Check if a pending/accepted connection already exists in either direction
+        existing = Connection.objects.filter(
+            sender__in=[request.user, receiver],
+            receiver__in=[request.user, receiver],
+        ).first()
+        if existing:
+            if existing.status == 'accepted':
+                return Response({"error": "Already connected."}, status=400)
             return Response({"error": "Connection request already sent."}, status=400)
 
+        conn = Connection.objects.create(
+            sender=request.user,
+            receiver=receiver,
+            message=serializer.validated_data.get('message', ''),
+        )
         send_connection_request_email(request.user, receiver)
         create_notification(
             recipient=receiver, notif_type='connection_request',
@@ -732,9 +740,22 @@ class FollowView(APIView):
         target = get_object_or_404(User, id=user_id, is_active=True)
         if target == request.user:
             return Response({"error": "Cannot follow yourself."}, status=400)
-        _, created = Follow.objects.get_or_create(follower=request.user, following=target)
+
+        follow, created = Follow.objects.get_or_create(
+            follower=request.user, following=target
+        )
         if not created:
-            return Response({"error": "Already following."}, status=400)
+            # Already following — unfollow (toggle)
+            follow.delete()
+            try:
+                p = target.advocate_profile
+                p.follower_count = max(0, p.follower_count - 1)
+                p.save(update_fields=['follower_count'])
+            except AdvocateProfile.DoesNotExist:
+                pass
+            return Response({"is_following": False, "message": f"Unfollowed {target.full_name}."})
+
+        # Newly followed
         try:
             target.advocate_profile.follower_count += 1
             target.advocate_profile.save(update_fields=['follower_count'])
@@ -746,7 +767,7 @@ class FollowView(APIView):
             body=f"{request.user.full_name} started following you.",
             sender=request.user,
         )
-        return Response({"message": f"Now following {target.full_name}."}, status=201)
+        return Response({"is_following": True, "message": f"Now following {target.full_name}."}, status=201)
 
     def delete(self, request, user_id):
         target = get_object_or_404(User, id=user_id)
@@ -1240,6 +1261,13 @@ class PostDetailView(APIView):
     def delete(self, request, pk):
         post = get_object_or_404(Post, id=pk, author=request.user)
         post.delete()
+        # Decrement cached post_count
+        try:
+            profile = request.user.advocate_profile
+            profile.post_count = max(0, profile.post_count - 1)
+            profile.save(update_fields=['post_count'])
+        except AdvocateProfile.DoesNotExist:
+            pass
         return Response(status=204)
 
 

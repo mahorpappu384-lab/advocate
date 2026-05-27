@@ -206,6 +206,11 @@ class AdvocateProfileSerializer(serializers.ModelSerializer):
     is_connected = serializers.SerializerMethodField()
     is_following = serializers.SerializerMethodField()
     connection_status = serializers.SerializerMethodField()
+    # Real-time count — cached field pe rely mat karo
+    post_count = serializers.SerializerMethodField()
+
+    def get_post_count(self, obj):
+        return Post.objects.filter(author=obj.user).count()
 
     class Meta:
         model = AdvocateProfile
@@ -302,10 +307,9 @@ class ConnectionSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'sender', 'status', 'created_at', 'updated_at']
 
 
-class ConnectionRequestSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Connection
-        fields = ['receiver', 'message']
+class ConnectionRequestSerializer(serializers.Serializer):
+    receiver_id = serializers.UUIDField()
+    message = serializers.CharField(required=False, allow_blank=True, default='')
 
 
 class FollowSerializer(serializers.ModelSerializer):
