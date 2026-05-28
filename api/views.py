@@ -1617,3 +1617,19 @@ class AdminLegalUpdateView(generics.ListCreateAPIView):
     serializer_class   = LegalUpdateSerializer
     permission_classes = [permissions.IsAdminUser]
     queryset           = LegalUpdate.objects.all().order_by('-created_at')
+
+class ChatRoomDetailView(generics.RetrieveAPIView):
+    """
+    GET /api/chat/rooms/<room_id>/
+    Single room fetch — direct navigation ke waqt Flutter use karta hai
+    """
+    serializer_class = ChatRoomSerializer
+    permission_classes = [permissions.IsAuthenticated]
+ 
+    def get_object(self):
+        room_id = self.kwargs['room_id']
+        return get_object_or_404(
+            ChatRoom,
+            id=room_id,
+            room_participants__user=self.request.user
+        )

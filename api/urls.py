@@ -86,6 +86,7 @@ urlpatterns = [
     # CHAT
     # Chat screen: All/Direct/Groups/Pinned tabs, pin/unpin
     # ══════════════════════════════════════════════════════════════════════════
+    path('chat/rooms/<uuid:room_id>/', views.ChatRoomDetailView.as_view(), name='chat-room-detail'),
     path('chat/rooms/',                              views.ChatRoomListView.as_view(),       name='chat-rooms'),          # ?tab=all|direct|group|pinned
     path('chat/rooms/direct/',                       views.CreateDirectChatView.as_view(),   name='create-direct'),
     path('chat/rooms/group/',                        views.CreateGroupChatView.as_view(),    name='create-group'),
