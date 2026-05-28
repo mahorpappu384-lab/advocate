@@ -902,14 +902,18 @@ class MessageListCreateView(APIView):
         room = get_object_or_404(ChatRoom, id=room_id, room_participants__user=request.user)
         page = int(request.query_params.get('page', 1))
         page_size = 50
-        messages = Message.objects.filter(room=room).select_related('sender').order_by('created_at')
+        messages = Message.objects.filter(room=room).select_related('sender').prefetch_related('read_receipts').order_by('created_at')
         total = messages.count()
         start = (page - 1) * page_size
-        messages = messages[start: start + page_size]
+        end = start + page_size
+        page_msgs = messages[start:end]
+        has_next = end < total
         ChatParticipant.objects.filter(room=room, user=request.user).update(last_read_at=timezone.now())
         return Response({
             "count": total,
-            "results": MessageSerializer(messages, many=True, context={'request': request}).data,
+            "next": f"?page={page + 1}" if has_next else None,
+            "previous": f"?page={page - 1}" if page > 1 else None,
+            "results": MessageSerializer(page_msgs, many=True, context={'request': request}).data,
         })
 
     def post(self, request, room_id):

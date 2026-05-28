@@ -340,13 +340,15 @@ class MessageSerializer(serializers.ModelSerializer):
     reply_to_preview = serializers.SerializerMethodField()
     read_by_count = serializers.SerializerMethodField()
     is_read = serializers.SerializerMethodField()
+    # Double-tick ke liye: jinne logo ne padha unke IDs
+    read_by = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
         fields = ['id', 'room', 'sender', 'message_type', 'content', 'file',
                   'file_name', 'file_size', 'reply_to', 'reply_to_preview',
                   'is_edited', 'is_deleted', 'created_at', 'updated_at',
-                  'read_by_count', 'is_read']
+                  'read_by_count', 'is_read', 'read_by']
         read_only_fields = ['id', 'sender', 'is_edited', 'created_at', 'updated_at']
 
     def get_reply_to_preview(self, obj):
@@ -367,6 +369,10 @@ class MessageSerializer(serializers.ModelSerializer):
         if request and request.user.is_authenticated:
             return obj.read_receipts.filter(user=request.user).exists()
         return False
+
+    def get_read_by(self, obj):
+        """Double-tick ke liye: jo users ne message padha unke UUID strings."""
+        return [str(r.user_id) for r in obj.read_receipts.all()]
 
 
 class ChatRoomSerializer(serializers.ModelSerializer):
