@@ -156,7 +156,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     return
 
                 # message_type whitelist — arbitrary types nahi aane chahiye
-                ALLOWED_TYPES = {"text", "image", "pdf", "doc", "voice", "file"}
+                ALLOWED_TYPES = {"text", "image", "pdf", "doc", "voice", "file", "video"}
                 if message_type not in ALLOWED_TYPES:
                     message_type = "text"
 
