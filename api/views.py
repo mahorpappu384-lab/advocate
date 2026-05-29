@@ -18,6 +18,10 @@ from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.text import slugify
+import uuid as _uuid
+import boto3
+from botocore.config import Config as BotoConfig
+from django.conf import settings
 
 from rest_framework import generics, status, permissions, viewsets
 from rest_framework.response import Response
