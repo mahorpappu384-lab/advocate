@@ -167,7 +167,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:8000",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "http://localhost:53005",
+    "http://localhost:63820",
     "https://magic-salon-admin.netlify.app",
 ]
 CORS_ALLOW_CREDENTIALS = True
@@ -176,6 +176,12 @@ CORS_ALLOW_HEADERS = [
     'content-type', 'dnt', 'origin', 'user-agent',
     'x-csrftoken', 'x-requested-with',
 ]
+
+R2_ENDPOINT_URL     = os.environ.get('R2_ENDPOINT_URL', 'https://00e27cbd0031bde85ffb3d8cd94297ea.r2.cloudflarestorage.com')
+R2_ACCESS_KEY_ID    = os.environ.get('R2_ACCESS_KEY_ID', '')
+R2_SECRET_ACCESS_KEY = os.environ.get('R2_SECRET_ACCESS_KEY', '')
+R2_BUCKET_NAME      = os.environ.get('R2_BUCKET_NAME', 'chat-files')       # apna bucket name
+R2_PUBLIC_URL       = os.environ.get('R2_PUBLIC_URL', 'https://pub-XXXX.r2.dev')
 
 # ─── Media & Static Files ─────────────────────────────────────────────────────
 STATIC_URL = '/static/'

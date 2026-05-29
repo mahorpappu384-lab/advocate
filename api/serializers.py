@@ -348,7 +348,7 @@ class MessageSerializer(serializers.ModelSerializer):
         fields = ['id', 'room', 'sender', 'message_type', 'content', 'file',
                   'file_name', 'file_size', 'reply_to', 'reply_to_preview',
                   'is_edited', 'is_deleted', 'created_at', 'updated_at',
-                  'read_by_count', 'is_read', 'read_by']
+                  'read_by_count', 'is_read', 'file_url', 'read_by']
         read_only_fields = ['id', 'sender', 'is_edited', 'created_at', 'updated_at']
 
     def get_reply_to_preview(self, obj):

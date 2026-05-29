@@ -449,6 +449,7 @@ class Message(models.Model):
     message_type = models.CharField(max_length=10, choices=MESSAGE_TYPES, default='text')
     content = models.TextField(blank=True)
     file = models.FileField(upload_to='chat_files/', blank=True, null=True)
+    file_url  = models.URLField(max_length=1000, blank=True, default='')
     file_name = models.CharField(max_length=255, blank=True)
     file_size = models.PositiveBigIntegerField(null=True, blank=True)
 

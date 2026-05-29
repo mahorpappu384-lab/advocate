@@ -1637,3 +1637,101 @@ class ChatRoomDetailView(generics.RetrieveAPIView):
             id=room_id,
             room_participants__user=self.request.user
         )
+
+class R2PresignedUploadView(APIView):
+    """
+    POST /api/chat/presign/
+ 
+    Flutter is view se presigned PUT URL maangta hai.
+    Phir file directly R2 pe upload karta hai.
+    Backend ko sirf final URL milta hai — zero file bandwidth on backend.
+ 
+    Request body:
+        {
+          "file_name": "photo.jpg",
+          "mime_type": "image/jpeg",
+          "room_id":   "<uuid>"
+        }
+ 
+    Response:
+        {
+          "upload_url": "https://...",   ← Flutter yahan PUT karega
+          "file_url":   "https://...",   ← Final public URL (WS se bhejo)
+          "key":        "chat/<room>/<uuid>.jpg"
+        }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+ 
+    # Allowed MIME types — arbitrary uploads block karo
+    ALLOWED_MIMES = {
+        'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'audio/mpeg', 'audio/mp4', 'audio/ogg', 'audio/wav',
+        'text/plain',
+    }
+ 
+    def post(self, request):
+        file_name = (request.data.get('file_name') or '').strip()
+        mime_type = (request.data.get('mime_type') or 'application/octet-stream').strip()
+        room_id   = (request.data.get('room_id') or '').strip()
+ 
+        if not file_name or not room_id:
+            return Response(
+                {'error': 'file_name and room_id are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+ 
+        if mime_type not in self.ALLOWED_MIMES:
+            return Response(
+                {'error': 'File type not allowed'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+ 
+        # Room participant check — security: sirf room member upload kar sake
+        from .models import ChatRoom
+        room_qs = ChatRoom.objects.filter(
+            id=room_id,
+            room_participants__user=request.user,
+        )
+        if not room_qs.exists():
+            return Response(
+                {'error': 'Room not found or access denied'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+ 
+        # Unique key generate karo: chat/<room_id>/<uuid>.<ext>
+        ext = file_name.rsplit('.', 1)[-1].lower() if '.' in file_name else ''
+        uid = _uuid.uuid4().hex
+        key = f"chat/{room_id}/{uid}.{ext}" if ext else f"chat/{room_id}/{uid}"
+ 
+        # R2 client — boto3 S3-compatible
+        r2 = boto3.client(
+            's3',
+            endpoint_url=settings.R2_ENDPOINT_URL,
+            aws_access_key_id=settings.R2_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
+            config=BotoConfig(signature_version='s3v4'),
+            region_name='auto',
+        )
+ 
+        # Presigned PUT URL — 5 min valid
+        upload_url = r2.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': settings.R2_BUCKET_NAME,
+                'Key': key,
+                'ContentType': mime_type,
+            },
+            ExpiresIn=300,
+        )
+ 
+        # Public URL — R2_PUBLIC_URL .env mein set karo
+        file_url = f"{settings.R2_PUBLIC_URL.rstrip('/')}/{key}"
+ 
+        return Response({
+            'upload_url': upload_url,
+            'file_url':   file_url,
+            'key':        key,
+        }, status=status.HTTP_200_OK)
