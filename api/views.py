@@ -1668,11 +1668,19 @@ class R2PresignedUploadView(APIView):
  
     # Allowed MIME types — arbitrary uploads block karo
     ALLOWED_MIMES = {
-        'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+        # Images
+        'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic', 'image/heif',
+        # Videos — Android/iOS dono ke common formats
+        'video/mp4', 'video/quicktime', 'video/x-matroska', 'video/webm',
+        'video/3gpp', 'video/3gpp2', 'video/mpeg', 'video/x-msvideo',
+        # Documents
         'application/pdf',
         'application/msword',
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'audio/mpeg', 'audio/mp4', 'audio/ogg', 'audio/wav',
+        # Audio / Voice
+        'audio/mpeg', 'audio/mp4', 'audio/ogg', 'audio/wav', 'audio/aac',
+        'audio/x-m4a', 'audio/amr',
+        # Text
         'text/plain',
     }
  
