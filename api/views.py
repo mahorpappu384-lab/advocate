@@ -906,12 +906,23 @@ class MessageListCreateView(APIView):
         room = get_object_or_404(ChatRoom, id=room_id, room_participants__user=request.user)
         page = int(request.query_params.get('page', 1))
         page_size = 50
-        messages = Message.objects.filter(room=room).select_related('sender').prefetch_related('read_receipts').order_by('created_at')
-        total = messages.count()
+
+        # Newest messages pehle fetch karo, phir reverse taaki chronological order mile
+        # page=1 → latest 50, page=2 → 51-100 etc.
+        messages_qs = (
+            Message.objects
+            .filter(room=room, is_deleted=False)
+            .select_related('sender')
+            .prefetch_related('read_receipts')
+            .order_by('-created_at')   # newest first for slicing
+        )
+        total = messages_qs.count()
         start = (page - 1) * page_size
-        end = start + page_size
-        page_msgs = messages[start:end]
-        has_next = end < total
+        end   = start + page_size
+        page_msgs = list(messages_qs[start:end])
+        page_msgs.reverse()            # chronological order restore karo for Flutter
+
+        has_next = end < total         # aur purane messages hain?
         ChatParticipant.objects.filter(room=room, user=request.user).update(last_read_at=timezone.now())
         return Response({
             "count": total,

@@ -340,16 +340,33 @@ class MessageSerializer(serializers.ModelSerializer):
     reply_to_preview = serializers.SerializerMethodField()
     read_by_count = serializers.SerializerMethodField()
     is_read = serializers.SerializerMethodField()
-    # Double-tick ke liye: jinne logo ne padha unke IDs
     read_by = serializers.SerializerMethodField()
+
+    # Flutter MessageModel.fromJson ke liye flat fields —
+    # sender object ke saath yeh bhi chahiye taaki isMine() kaam kare
+    sender_id   = serializers.SerializerMethodField()
+    sender_name = serializers.SerializerMethodField()
+    username    = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
-        fields = ['id', 'room', 'sender', 'message_type', 'content', 'file',
+        fields = ['id', 'room', 'sender', 'sender_id', 'sender_name', 'username',
+                  'message_type', 'content', 'file',
                   'file_name', 'file_size', 'reply_to', 'reply_to_preview',
                   'is_edited', 'is_deleted', 'created_at', 'updated_at',
                   'read_by_count', 'is_read', 'file_url', 'read_by']
         read_only_fields = ['id', 'sender', 'is_edited', 'created_at', 'updated_at']
+
+    def get_sender_id(self, obj):
+        return str(obj.sender_id) if obj.sender_id else None
+
+    def get_sender_name(self, obj):
+        if obj.sender:
+            return obj.sender.full_name or obj.sender.username or ''
+        return ''
+
+    def get_username(self, obj):
+        return obj.sender.username if obj.sender else ''
 
     def get_reply_to_preview(self, obj):
         if obj.reply_to and not obj.reply_to.is_deleted:

@@ -435,12 +435,14 @@ class ChatParticipant(models.Model):
 
 class Message(models.Model):
     MESSAGE_TYPES = [
-        ('text', 'Text'),
+        ('text',  'Text'),
         ('image', 'Image'),
-        ('pdf', 'PDF Document'),
-        ('doc', 'Word Document'),
+        ('video', 'Video'),       # R2 uploaded video
+        ('pdf',   'PDF Document'),
+        ('doc',   'Word Document'),
         ('voice', 'Voice Note'),
-        ('system', 'System Message'),
+        ('file',  'File'),        # Generic file
+        ('system','System Message'),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
