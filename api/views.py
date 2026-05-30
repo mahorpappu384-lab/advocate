@@ -1175,8 +1175,9 @@ class TrendingHashtagsView(generics.ListAPIView):
 class FeedListCreateView(generics.ListCreateAPIView):
     """
     GET  /api/feed/   — home feed
-    POST /api/feed/   — create post (content, post_type, media, is_public, hashtag_names)
+    POST /api/feed/   — create post
     """
+
     serializer_class   = PostSerializer
     permission_classes = [permissions.IsAuthenticated]
     filterset_class    = PostFilter
@@ -1211,31 +1212,63 @@ class FeedListCreateView(generics.ListCreateAPIView):
         return qs
 
     def perform_create(self, serializer):
+        """
+        Post create karo.
+
+        Do modes support karte hain:
+          1. Legacy: multipart FILE upload (`media` field as file)
+          2. R2 URL: Flutter ne pehle R2 pe upload kiya,
+             ab sirf URL bheja hai (`media` field as string URL)
+
+        Priority: File > URL string
+        """
 
         file = self.request.FILES.get('media')
-        media_type = get_file_type(file) if file else ''
+        data = self.request.data
+
+        if file:
+            # Old way: direct file upload
+            media_value = file
+            media_type = get_file_type(file)
+
+        else:
+            # New way: R2 URL already uploaded by Flutter
+            media_url = data.get('media', '')
+
+            media_value = (
+                media_url
+                if isinstance(media_url, str)
+                and media_url.startswith('http')
+                else None
+            )
+
+            media_type = data.get('media_type', '')
 
         post = serializer.save(
             author=self.request.user,
-            media=file,
+            media=media_value,
             media_type=media_type
         )
 
         # -------------------------
         # Handle hashtags safely
         # -------------------------
-        data = self.request.data
 
+        # Support both hashtag_names & hashtags
         if hasattr(data, 'getlist'):
-            hashtag_names = data.getlist('hashtag_names[]')
+            hashtag_names = (
+                data.getlist('hashtag_names[]')
+                or data.getlist('hashtags[]')
+            )
         else:
-            hashtag_names = data.get('hashtag_names', [])
-
-        # fallback from serializer
-        if not hashtag_names:
-            hashtag_names = serializer.validated_data.get(
-                'hashtag_names',
-                []
+            hashtag_names = (
+                data.get('hashtag_names')
+                or data.get('hashtags')
+                or serializer.validated_data.get(
+                    'hashtag_names',
+                    []
+                )
+                or []
             )
 
         # convert string -> list
@@ -1251,7 +1284,9 @@ class FeedListCreateView(generics.ListCreateAPIView):
             name = name.strip().lstrip('#').lower()
 
             if name:
-                tag, created = Hashtag.objects.get_or_create(name=name)
+                tag, created = Hashtag.objects.get_or_create(
+                    name=name
+                )
 
                 post.hashtags.add(tag)
 
@@ -1261,6 +1296,7 @@ class FeedListCreateView(generics.ListCreateAPIView):
         # -------------------------
         # Update author post count
         # -------------------------
+
         try:
             profile = post.author.advocate_profile
             profile.post_count += 1

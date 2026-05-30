@@ -655,7 +655,7 @@ class Post(models.Model):
     author = models.ForeignKey(User, on_delete=models.CASCADE, related_name='posts')
     post_type = models.CharField(max_length=20, choices=POST_TYPES, default='text')
     content = models.TextField()
-    media = models.FileField(upload_to='post_media/', blank=True, null=True)
+    media = models.URLField(max_length=1000, blank=True, null=True)
     media_type = models.CharField(max_length=20, blank=True)
 
     # Feed: hashtags on posts (e.g. #SupremeCourt #JudicialReform #LiveStreaming)
