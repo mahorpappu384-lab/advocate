@@ -1175,9 +1175,8 @@ class TrendingHashtagsView(generics.ListAPIView):
 class FeedListCreateView(generics.ListCreateAPIView):
     """
     GET  /api/feed/   — home feed
-    POST /api/feed/   — create post
+    POST /api/feed/   — create post (content, post_type, media, is_public, hashtag_names)
     """
-
     serializer_class   = PostSerializer
     permission_classes = [permissions.IsAuthenticated]
     filterset_class    = PostFilter
@@ -1212,63 +1211,31 @@ class FeedListCreateView(generics.ListCreateAPIView):
         return qs
 
     def perform_create(self, serializer):
-        """
-        Post create karo.
-
-        Do modes support karte hain:
-          1. Legacy: multipart FILE upload (`media` field as file)
-          2. R2 URL: Flutter ne pehle R2 pe upload kiya,
-             ab sirf URL bheja hai (`media` field as string URL)
-
-        Priority: File > URL string
-        """
 
         file = self.request.FILES.get('media')
-        data = self.request.data
-
-        if file:
-            # Old way: direct file upload
-            media_value = file
-            media_type = get_file_type(file)
-
-        else:
-            # New way: R2 URL already uploaded by Flutter
-            media_url = data.get('media', '')
-
-            media_value = (
-                media_url
-                if isinstance(media_url, str)
-                and media_url.startswith('http')
-                else None
-            )
-
-            media_type = data.get('media_type', '')
+        media_type = get_file_type(file) if file else ''
 
         post = serializer.save(
             author=self.request.user,
-            media=media_value,
+            media=file,
             media_type=media_type
         )
 
         # -------------------------
         # Handle hashtags safely
         # -------------------------
+        data = self.request.data
 
-        # Support both hashtag_names & hashtags
         if hasattr(data, 'getlist'):
-            hashtag_names = (
-                data.getlist('hashtag_names[]')
-                or data.getlist('hashtags[]')
-            )
+            hashtag_names = data.getlist('hashtag_names[]')
         else:
-            hashtag_names = (
-                data.get('hashtag_names')
-                or data.get('hashtags')
-                or serializer.validated_data.get(
-                    'hashtag_names',
-                    []
-                )
-                or []
+            hashtag_names = data.get('hashtag_names', [])
+
+        # fallback from serializer
+        if not hashtag_names:
+            hashtag_names = serializer.validated_data.get(
+                'hashtag_names',
+                []
             )
 
         # convert string -> list
@@ -1284,9 +1251,7 @@ class FeedListCreateView(generics.ListCreateAPIView):
             name = name.strip().lstrip('#').lower()
 
             if name:
-                tag, created = Hashtag.objects.get_or_create(
-                    name=name
-                )
+                tag, created = Hashtag.objects.get_or_create(name=name)
 
                 post.hashtags.add(tag)
 
@@ -1296,7 +1261,6 @@ class FeedListCreateView(generics.ListCreateAPIView):
         # -------------------------
         # Update author post count
         # -------------------------
-
         try:
             profile = post.author.advocate_profile
             profile.post_count += 1
@@ -1789,6 +1753,80 @@ class R2PresignedUploadView(APIView):
         # Public URL — R2_PUBLIC_URL .env mein set karo
         file_url = f"{settings.R2_PUBLIC_URL.rstrip('/')}/{key}"
  
+        return Response({
+            'upload_url': upload_url,
+            'file_url':   file_url,
+            'key':        key,
+        }, status=status.HTTP_200_OK)
+
+class PostMediaPresignView(APIView):
+    """
+    POST /api/feed/presign/
+
+    Community post ke media (image/video/document) ke liye presigned R2 URL.
+    Chat presign se alag — wahan room_id UUID required hai, post uploads ka koi room nahi.
+
+    Request body:
+        { "file_name": "photo.jpg", "mime_type": "image/jpeg" }
+
+    Response:
+        { "upload_url": "https://...", "file_url": "https://...", "key": "posts/.../uuid.jpg" }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    ALLOWED_MIMES = {
+        'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+        'image/heic', 'image/heif',
+        'video/mp4', 'video/quicktime', 'video/x-matroska', 'video/webm',
+        'video/3gpp', 'video/mpeg', 'video/x-msvideo',
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'text/plain',
+    }
+
+    def post(self, request):
+        file_name = (request.data.get('file_name') or '').strip()
+        mime_type = (request.data.get('mime_type') or 'application/octet-stream').strip()
+
+        if not file_name:
+            return Response(
+                {'error': 'file_name is required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if mime_type not in self.ALLOWED_MIMES:
+            return Response(
+                {'error': 'File type not allowed'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        ext = file_name.rsplit('.', 1)[-1].lower() if '.' in file_name else ''
+        uid = _uuid.uuid4().hex
+        folder = _uuid.uuid4().hex  # path obfuscation
+        key = f"posts/{folder}/{uid}.{ext}" if ext else f"posts/{folder}/{uid}"
+
+        r2 = boto3.client(
+            's3',
+            endpoint_url=settings.R2_ENDPOINT_URL,
+            aws_access_key_id=settings.R2_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
+            config=BotoConfig(signature_version='s3v4'),
+            region_name='auto',
+        )
+
+        upload_url = r2.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': settings.R2_BUCKET_NAME,
+                'Key': key,
+                'ContentType': mime_type,
+            },
+            ExpiresIn=300,
+        )
+
+        file_url = f"{settings.R2_PUBLIC_URL.rstrip('/')}/{key}"
+
         return Response({
             'upload_url': upload_url,
             'file_url':   file_url,

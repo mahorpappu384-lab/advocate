@@ -82,6 +82,7 @@ urlpatterns = [
     path('follow/<uuid:user_id>/',             views.FollowView.as_view(),               name='follow'),
     path('network/suggested/',                 views.SuggestedAdvocatesView.as_view(),   name='suggested'),      # Feed: People to Follow
     path('chat/presign/', views.R2PresignedUploadView.as_view(), name='r2-presign'),
+    path('feed/presign/', views.PostMediaPresignView.as_view(), name='post-media-presign'),
 
     # ══════════════════════════════════════════════════════════════════════════
     # CHAT
