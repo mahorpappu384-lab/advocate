@@ -1219,7 +1219,7 @@ class ChannelIconPresignView(APIView):
                 },
                 ExpiresIn=300,
             )
-            file_url = f"{settings.CLOUDFLARE_R2_PUBLIC_URL}/{unique_name}"
+            file_url = f"{settings.R2_PUBLIC_URL}/{unique_name}"
             return Response({'upload_url': upload_url, 'file_url': file_url})
         except Exception as e:
             logger.error(f"Channel icon presign error: {e}")
