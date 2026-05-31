@@ -1247,25 +1247,28 @@ class ChannelPostPresignView(APIView):
         mime_type = request.data.get('mime_type', 'image/jpeg')
 
         try:
+            # Use same R2 settings as chat presign (R2_ENDPOINT_URL, R2_ACCESS_KEY_ID, etc.)
             r2 = boto3.client(
                 's3',
-                endpoint_url=settings.CLOUDFLARE_R2_ENDPOINT,
-                aws_access_key_id=settings.CLOUDFLARE_R2_ACCESS_KEY,
-                aws_secret_access_key=settings.CLOUDFLARE_R2_SECRET_KEY,
+                endpoint_url=settings.R2_ENDPOINT_URL,
+                aws_access_key_id=settings.R2_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
                 config=BotoConfig(signature_version='s3v4'),
                 region_name='auto',
             )
-            unique_name = f"channel_attachments/{channel_id}/{_uuid.uuid4()}_{file_name}"
+            ext = file_name.rsplit('.', 1)[-1].lower() if '.' in file_name else ''
+            uid = _uuid.uuid4().hex
+            unique_name = f"channel_attachments/{channel_id}/{uid}.{ext}" if ext else f"channel_attachments/{channel_id}/{uid}"
             upload_url = r2.generate_presigned_url(
                 'put_object',
                 Params={
-                    'Bucket': settings.CLOUDFLARE_R2_BUCKET_NAME,
+                    'Bucket': settings.R2_BUCKET_NAME,
                     'Key': unique_name,
                     'ContentType': mime_type,
                 },
                 ExpiresIn=300,
             )
-            file_url = f"{settings.CLOUDFLARE_R2_PUBLIC_URL}/{unique_name}"
+            file_url = f"{settings.R2_PUBLIC_URL.rstrip('/')}/{unique_name}"
             return Response({'upload_url': upload_url, 'file_url': file_url})
         except Exception as e:
             logger.error(f"Channel post presign error: {e}")

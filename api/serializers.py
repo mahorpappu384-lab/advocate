@@ -497,7 +497,8 @@ class ChannelSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if not request or not request.user.is_authenticated:
             return False
-        return obj.memberships.filter(user=request.user).exists()
+        # Only active memberships — pending join requests should NOT count
+        return obj.memberships.filter(user=request.user, status='active').exists()
 
     def get_is_member(self, obj):
         return self.get_is_joined(obj)
@@ -552,7 +553,14 @@ class ChannelPostSerializer(serializers.ModelSerializer):
                   'content', 'attachment', 'attachment_url', 'attachment_type',
                   'is_pinned', 'is_announcement', 'like_count', 'comment_count',
                   'comments', 'is_liked', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'author', 'like_count', 'comment_count', 'created_at']
+        read_only_fields = ['id', 'author', 'channel', 'like_count', 'comment_count', 'created_at']
+        extra_kwargs = {
+            'sub_channel': {'required': False, 'allow_null': True},
+            'attachment': {'required': False, 'allow_null': True},
+            'attachment_type': {'required': False, 'allow_blank': True},
+            'is_pinned': {'required': False},
+            'is_announcement': {'required': False},
+        }
 
     def get_is_liked(self, obj):
         request = self.context.get('request')
