@@ -500,8 +500,9 @@ class Channel(models.Model):
     slug = models.SlugField(unique=True, max_length=200)
     description = models.TextField(blank=True)
     channel_type = models.CharField(max_length=20, choices=CHANNEL_TYPES, default='court')
-    icon = models.ImageField(upload_to='channel_icons/', blank=True, null=True)
-    cover = models.ImageField(upload_to='channel_covers/', blank=True, null=True)
+    # URLField — Flutter R2 direct upload se URL string aata hai, file nahi
+    icon = models.URLField(max_length=500, blank=True, null=True)
+    cover = models.URLField(max_length=500, blank=True, null=True)
     court_name = models.CharField(max_length=200, blank=True)  # e.g. "Supreme Court of India"
     city = models.CharField(max_length=100, blank=True)
     state = models.CharField(max_length=100, blank=True)

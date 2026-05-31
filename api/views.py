@@ -1006,7 +1006,11 @@ class MyChannelsView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return Channel.objects.filter(memberships__user=self.request.user).prefetch_related('sub_channels')
+        # sirf active memberships — pending join requests exclude karo
+        return Channel.objects.filter(
+            memberships__user=self.request.user,
+            memberships__status='active',
+        ).prefetch_related('sub_channels').distinct()
 
 
 class ChannelDetailView(generics.RetrieveAPIView):

@@ -514,27 +514,12 @@ class ChannelSerializer(serializers.ModelSerializer):
         return 0
 
     def get_icon_url(self, obj):
-        """Return icon URL — works for both ImageField and URLField."""
-        if not obj.icon:
-            return None
-        request = self.context.get('request')
-        url = str(obj.icon)
-        if url.startswith('http'):
-            return url
-        if request:
-            return request.build_absolute_uri(url)
-        return url
+        """icon ab URLField hai — seedha return karo (ImageField logic hatao)."""
+        return obj.icon or None
 
     def get_cover_url(self, obj):
-        if not obj.cover:
-            return None
-        request = self.context.get('request')
-        url = str(obj.cover)
-        if url.startswith('http'):
-            return url
-        if request:
-            return request.build_absolute_uri(url)
-        return url
+        """cover ab URLField hai — seedha return karo."""
+        return obj.cover or None
 
 
 class ChannelPostCommentSerializer(serializers.ModelSerializer):
