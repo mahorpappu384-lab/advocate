@@ -34,7 +34,7 @@ from .models import (
     AdvocateProfile, AdvocateEducation, AdvocateExperience, AdvocateAchievement,
     Connection, Follow, OTP,
     ChatRoom, ChatParticipant, Message, MessageReadReceipt,
-    Channel, SubChannel, ChannelMembership, ChannelPost, ChannelPostComment, ChannelPostLike,
+    Channel, SubChannel, ChannelMembership, ChannelPost, ChannelPostComment, ChannelPostLike, ChannelPostReaction,
     Post, PostReaction, PostComment, Hashtag, SavedPost, PostShare,
     CaseGroup, GroupMembership, GroupDocument,
     Notification, Report,
@@ -49,6 +49,7 @@ from .serializers import (
     ConnectionSerializer, ConnectionRequestSerializer, FollowSerializer,
     ChatRoomSerializer, MessageSerializer, CreateDirectChatSerializer, CreateGroupChatSerializer,
     ChannelSerializer, SubChannelSerializer, ChannelPostSerializer, ChannelPostCommentSerializer,
+    ChannelPostReactionSerializer,
     PostSerializer, PostCommentSerializer, HashtagSerializer,
     CaseGroupSerializer, GroupDocumentSerializer,
     NotificationSerializer, ReportSerializer,
@@ -1364,44 +1365,107 @@ class ChannelPostListCreateView(generics.ListCreateAPIView):
             attachment_type=att_type,
             sub_channel=sub_channel,
         )
-        if attachment:
-            save_kwargs['attachment'] = attachment
-        elif attachment_url_r2:
-            # Store R2 URL directly in attachment field (CharField-compatible)
-            save_kwargs['attachment'] = attachment_url_r2
+        if attachment_url_r2:
+            # R2 URL directly store karo
+            save_kwargs['attachment_url'] = attachment_url_r2
+        elif attachment:
+            # Legacy direct file upload (fallback) — store URL if possible
+            save_kwargs['attachment_url'] = None  # direct file upload deprecated
 
         serializer.save(**save_kwargs)
 
 
 class ChannelPostLikeView(APIView):
+    """
+    POST /api/channels/posts/<uuid>/like/
+    Telegram-style reaction toggle.
+    Body: { "reaction_type": "like" | "love" | "insightful" | "celebrate" | "support" }
+    - Same reaction type → toggle off (remove reaction)
+    - Different reaction type → switch to new reaction
+    - No existing reaction → add new reaction
+    Response: { "is_liked": bool, "like_count": int, "user_reaction": str|null,
+                "reactions_summary": { "like": N, "love": N, ... } }
+    """
     permission_classes = [permissions.IsAuthenticated]
+
+    VALID_TYPES = {'like', 'love', 'insightful', 'celebrate', 'support'}
 
     def post(self, request, pk):
         post = get_object_or_404(ChannelPost, id=pk)
-        like, created = ChannelPostLike.objects.get_or_create(post=post, user=request.user)
-        if not created:
-            like.delete()
-            post.like_count = max(0, post.like_count - 1)
+        reaction_type = (request.data.get('reaction_type') or 'like').strip().lower()
+
+        if reaction_type not in self.VALID_TYPES:
+            return Response(
+                {'error': f'Invalid reaction_type. Choose from: {", ".join(self.VALID_TYPES)}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        existing = ChannelPostReaction.objects.filter(post=post, user=request.user).first()
+
+        if existing:
+            if existing.reaction_type == reaction_type:
+                # Same reaction → toggle off (remove)
+                existing.delete()
+                post.like_count = max(0, ChannelPostReaction.objects.filter(post=post).count())
+                post.save(update_fields=['like_count'])
+                user_reaction = None
+                is_liked = False
+            else:
+                # Different reaction → switch
+                existing.reaction_type = reaction_type
+                existing.save(update_fields=['reaction_type'])
+                user_reaction = reaction_type
+                is_liked = True
+        else:
+            # New reaction
+            ChannelPostReaction.objects.create(post=post, user=request.user, reaction_type=reaction_type)
+            post.like_count = ChannelPostReaction.objects.filter(post=post).count()
             post.save(update_fields=['like_count'])
-            return Response({"liked": False, "like_count": post.like_count})
-        post.like_count += 1
-        post.save(update_fields=['like_count'])
-        return Response({"liked": True, "like_count": post.like_count})
+            user_reaction = reaction_type
+            is_liked = True
+
+        # Telegram-style summary
+        from django.db.models import Count
+        summary = {
+            row['reaction_type']: row['count']
+            for row in ChannelPostReaction.objects.filter(post=post)
+                .values('reaction_type').annotate(count=Count('id'))
+        }
+
+        return Response({
+            'is_liked':          is_liked,
+            'like_count':        post.like_count,
+            'user_reaction':     user_reaction,
+            'reactions_summary': summary,
+        })
 
 
 class ChannelPostCommentView(generics.ListCreateAPIView):
+    """
+    GET  /api/channels/posts/<post_id>/comments/  — list top-level comments with replies
+    POST /api/channels/posts/<post_id>/comments/  — add comment
+    Body: { "content": "...", "parent": "<uuid>" (optional for replies) }
+    """
     serializer_class   = ChannelPostCommentSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        # Sirf top-level comments (parent=None) return karo — replies nested hain
         return ChannelPostComment.objects.filter(
             post_id=self.kwargs['post_id'], parent=None,
-        ).select_related('author')
+        ).select_related('author').prefetch_related('replies__author')
 
     def perform_create(self, serializer):
         post = get_object_or_404(ChannelPost, id=self.kwargs['post_id'])
-        serializer.save(author=self.request.user, post=post)
-        post.comment_count += 1
+
+        # parent UUID resolve karo agar reply hai
+        parent_id = self.request.data.get('parent')
+        parent = None
+        if parent_id:
+            parent = ChannelPostComment.objects.filter(id=parent_id, post=post).first()
+
+        serializer.save(author=self.request.user, post=post, parent=parent)
+        post.comment_count = ChannelPostComment.objects.filter(post=post).count()
         post.save(update_fields=['comment_count'])
 
 

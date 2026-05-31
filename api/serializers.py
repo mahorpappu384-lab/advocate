@@ -11,7 +11,7 @@ from .models import (
     AdvocateProfile, AdvocateEducation, AdvocateExperience, AdvocateAchievement,
     Connection, Follow, OTP,
     ChatRoom, ChatParticipant, Message, MessageReadReceipt,
-    Channel, SubChannel, ChannelMembership, ChannelPost, ChannelPostComment, ChannelPostLike,
+    Channel, SubChannel, ChannelMembership, ChannelPost, ChannelPostComment, ChannelPostLike, ChannelPostReaction,
     Post, PostReaction, PostComment, PostCommentLike, Hashtag, SavedPost, PostShare,
     CaseGroup, GroupMembership, GroupDocument,
     Notification, Report,
@@ -523,6 +523,28 @@ class ChannelSerializer(serializers.ModelSerializer):
         return obj.cover or None
 
 
+class ChannelPostReactionSerializer(serializers.ModelSerializer):
+    """Telegram-style per-type reaction summary for a channel post."""
+    user = UserMiniSerializer(read_only=True)
+
+    class Meta:
+        model = ChannelPostReaction
+        fields = ['id', 'user', 'reaction_type', 'created_at']
+        read_only_fields = ['id', 'user', 'created_at']
+
+
+class ChannelPostReactionSummarySerializer(serializers.Serializer):
+    """
+    Aggregated reaction counts — Telegram style.
+    e.g. { "like": 5, "love": 2, "insightful": 3, ... }
+    """
+    like       = serializers.IntegerField(default=0)
+    love       = serializers.IntegerField(default=0)
+    insightful = serializers.IntegerField(default=0)
+    celebrate  = serializers.IntegerField(default=0)
+    support    = serializers.IntegerField(default=0)
+
+
 class ChannelPostCommentSerializer(serializers.ModelSerializer):
     author = UserMiniSerializer(read_only=True)
     replies = serializers.SerializerMethodField()
@@ -541,46 +563,60 @@ class ChannelPostCommentSerializer(serializers.ModelSerializer):
 
 
 class ChannelPostSerializer(serializers.ModelSerializer):
-    author = UserMiniSerializer(read_only=True)
-    comments = ChannelPostCommentSerializer(many=True, read_only=True)
-    is_liked = serializers.SerializerMethodField()
+    author           = UserMiniSerializer(read_only=True)
+    comments         = ChannelPostCommentSerializer(many=True, read_only=True)
+    is_liked         = serializers.SerializerMethodField()
+    user_reaction    = serializers.SerializerMethodField()   # Current user ka reaction type
+    reactions_summary = serializers.SerializerMethodField()  # Telegram-style counts
     sub_channel_name = serializers.SerializerMethodField()
-    attachment_url = serializers.SerializerMethodField()
+    attachment_url   = serializers.SerializerMethodField()
 
     class Meta:
         model = ChannelPost
         fields = ['id', 'channel', 'sub_channel', 'sub_channel_name', 'author',
-                  'content', 'attachment', 'attachment_url', 'attachment_type',
+                  'content', 'attachment_url', 'attachment_type',
                   'is_pinned', 'is_announcement', 'like_count', 'comment_count',
-                  'comments', 'is_liked', 'created_at', 'updated_at']
+                  'comments', 'is_liked', 'user_reaction', 'reactions_summary',
+                  'created_at', 'updated_at']
         read_only_fields = ['id', 'author', 'channel', 'like_count', 'comment_count', 'created_at']
         extra_kwargs = {
             'sub_channel': {'required': False, 'allow_null': True},
-            'attachment': {'required': False, 'allow_null': True},
             'attachment_type': {'required': False, 'allow_blank': True},
             'is_pinned': {'required': False},
             'is_announcement': {'required': False},
         }
 
     def get_is_liked(self, obj):
+        """Backward compat — True if user has ANY reaction on this post."""
         request = self.context.get('request')
         if not request or not request.user.is_authenticated:
             return False
-        return obj.likes.filter(user=request.user).exists()
+        return obj.reactions.filter(user=request.user).exists()
+
+    def get_user_reaction(self, obj):
+        """Current user ka reaction type — None if no reaction."""
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return None
+        rxn = obj.reactions.filter(user=request.user).first()
+        return rxn.reaction_type if rxn else None
+
+    def get_reactions_summary(self, obj):
+        """
+        Telegram-style per-type counts.
+        Returns only types that have at least 1 reaction.
+        e.g. { "like": 5, "love": 2 }
+        """
+        from django.db.models import Count
+        qs = obj.reactions.values('reaction_type').annotate(count=Count('id'))
+        return {row['reaction_type']: row['count'] for row in qs}
 
     def get_sub_channel_name(self, obj):
         return obj.sub_channel.name if obj.sub_channel else None
 
     def get_attachment_url(self, obj):
-        if not obj.attachment:
-            return None
-        url = str(obj.attachment)
-        if url.startswith('http'):
-            return url
-        request = self.context.get('request')
-        if request:
-            return request.build_absolute_uri(url)
-        return url
+        """Return R2 URL stored in attachment_url field."""
+        return obj.attachment_url or None
 
 
 # ══════════════════════════════════════════════════════════════════════════════

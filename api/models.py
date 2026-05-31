@@ -578,7 +578,7 @@ class ChannelPost(models.Model):
     sub_channel = models.ForeignKey(SubChannel, on_delete=models.SET_NULL, null=True, blank=True, related_name='posts')
     author = models.ForeignKey(User, on_delete=models.CASCADE, related_name='channel_posts')
     content = models.TextField()
-    attachment = models.FileField(upload_to='channel_attachments/', blank=True, null=True)
+    attachment_url = models.URLField(max_length=1000, blank=True, null=True)  # R2 URL
     attachment_type = models.CharField(max_length=20, blank=True)
     is_pinned = models.BooleanField(default=False)
     is_announcement = models.BooleanField(default=False)
@@ -616,6 +616,33 @@ class ChannelPostLike(models.Model):
     class Meta:
         db_table = 'channel_post_likes'
         unique_together = ('post', 'user')
+
+class ChannelPostReaction(models.Model):
+    """
+    Telegram-style reactions on channel posts.
+    Har user ek hi reaction de sakta hai per post.
+    Multiple reaction types: like 👍, love ❤️, insightful 💡, celebrate 🎉, support 🤝
+    """
+    REACTION_TYPES = [
+        ('like',       '👍 Like'),
+        ('love',       '❤️ Love'),
+        ('insightful', '💡 Insightful'),
+        ('celebrate',  '🎉 Celebrate'),
+        ('support',    '🤝 Support'),
+    ]
+
+    post = models.ForeignKey(ChannelPost, on_delete=models.CASCADE, related_name='reactions')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='channel_post_reactions')
+    reaction_type = models.CharField(max_length=15, choices=REACTION_TYPES, default='like')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'channel_post_reactions'
+        unique_together = ('post', 'user')  # Ek user ek hi reaction per post
+
+    def __str__(self):
+        return f"{self.user.full_name} reacted {self.reaction_type} on post {self.post_id}"
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
