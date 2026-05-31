@@ -105,6 +105,7 @@ urlpatterns = [
     path('channels/create/',                           views.CreateChannelView.as_view(),             name='create-channel'),
     path('channels/mine/',                             views.MyChannelsView.as_view(),                name='my-channels'),
     path('channels/<uuid:id>/',                        views.ChannelDetailView.as_view(),             name='channel-detail'),
+    path('channels/<uuid:id>/update/',                 views.UpdateChannelView.as_view(),             name='channel-update'),
     path('channels/<uuid:pk>/join/',                   views.JoinChannelView.as_view(),               name='join-channel'),
     path('channels/<uuid:pk>/leave/',                  views.LeaveChannelView.as_view(),              name='leave-channel'),
     path('channels/<uuid:channel_id>/sub-channels/',   views.SubChannelListCreateView.as_view(),      name='sub-channels'),        # Sub-channels

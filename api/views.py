@@ -1016,6 +1016,26 @@ class ChannelDetailView(generics.RetrieveAPIView):
     lookup_field       = 'id'
 
 
+class UpdateChannelView(generics.UpdateAPIView):
+    """PATCH /api/channels/<uuid>/ — only channel admin can update"""
+    serializer_class   = ChannelSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset           = Channel.objects.prefetch_related('sub_channels')
+    lookup_field       = 'id'
+    http_method_names  = ['patch']  # only PATCH, not PUT
+
+    def get_object(self):
+        channel = super().get_object()
+        # Only admin members can update
+        membership = channel.memberships.filter(
+            user=self.request.user, role='admin'
+        ).first()
+        if not membership:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('Only channel admins can update this channel.')
+        return channel
+
+
 class CreateChannelView(generics.CreateAPIView):
     serializer_class   = ChannelSerializer
     permission_classes = [permissions.IsAuthenticated]
