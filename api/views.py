@@ -1203,9 +1203,9 @@ class ChannelIconPresignView(APIView):
         try:
             r2 = boto3.client(
                 's3',
-                endpoint_url=settings.CLOUDFLARE_R2_ENDPOINT,
-                aws_access_key_id=settings.CLOUDFLARE_R2_ACCESS_KEY,
-                aws_secret_access_key=settings.CLOUDFLARE_R2_SECRET_KEY,
+                endpoint_url=settings.R2_ENDPOINT_URL,
+                aws_access_key_id=settings.R2_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
                 config=BotoConfig(signature_version='s3v4'),
                 region_name='auto',
             )
@@ -1213,7 +1213,7 @@ class ChannelIconPresignView(APIView):
             upload_url = r2.generate_presigned_url(
                 'put_object',
                 Params={
-                    'Bucket': settings.CLOUDFLARE_R2_BUCKET_NAME,
+                    'Bucket': settings.R2_BUCKET_NAME,
                     'Key': unique_name,
                     'ContentType': mime_type,
                 },
