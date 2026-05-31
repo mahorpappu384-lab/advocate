@@ -563,16 +563,18 @@ class PostCommentSerializer(serializers.ModelSerializer):
 
 
 class PostSerializer(serializers.ModelSerializer):
-    author = UserMiniSerializer(read_only=True)
+    author        = UserMiniSerializer(read_only=True)
     user_reaction = serializers.SerializerMethodField()
-    top_comments = serializers.SerializerMethodField()
-    hashtags = HashtagSerializer(many=True, read_only=True)
-    # Feed screen: has the current user saved this post?
-    is_saved = serializers.SerializerMethodField()
+    top_comments  = serializers.SerializerMethodField()
+    hashtags      = HashtagSerializer(many=True, read_only=True)
+    is_saved      = serializers.SerializerMethodField()
+    # R2 URL ya local file — dono handle karta hai
+    media         = serializers.SerializerMethodField()
     # Raw hashtag input for creating posts
+    # Flutter 'hashtags' key bhejta hai — perform_create dono keys handle karta hai
     hashtag_names = serializers.ListField(
         child=serializers.CharField(max_length=100),
-        write_only=True, required=False
+        write_only=True, required=False, default=list,
     )
 
     class Meta:
@@ -583,6 +585,33 @@ class PostSerializer(serializers.ModelSerializer):
                   'is_saved', 'created_at', 'updated_at']
         read_only_fields = ['id', 'author', 'like_count', 'comment_count',
                             'share_count', 'created_at', 'updated_at']
+
+    def get_media(self, obj):
+        """
+        R2 direct upload flow:
+          - Flutter ne pehle Cloudflare R2 pe file upload kiya
+          - Backend ko sirf URL mila, koi file bytes nahi
+          - URLField mein full https:// URL store hota hai → seedha return karo
+
+        Legacy FileField flow (purane records ke liye fallback):
+          - File Django ke upload_to='post_media/' mein save thi
+          - Relative path hoga → request se absolute URL banao
+        """
+        if not obj.media:
+            return None
+
+        url = str(obj.media)
+
+        # R2 ya koi bhi absolute URL — seedha return karo
+        if url.startswith('http://') or url.startswith('https://'):
+            return url
+
+        # Local file fallback (purane records)
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(url)
+
+        return url
 
     def get_user_reaction(self, obj):
         request = self.context.get('request')

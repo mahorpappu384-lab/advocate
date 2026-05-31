@@ -1211,61 +1211,50 @@ class FeedListCreateView(generics.ListCreateAPIView):
         return qs
 
     def perform_create(self, serializer):
+        data = self.request.data
 
+        # Media: FILE upload (legacy) > R2 URL string (new flow)
         file = self.request.FILES.get('media')
-        media_type = get_file_type(file) if file else ''
+        if file:
+            media_value = file
+            media_type  = get_file_type(file)
+        else:
+            url = (data.get('media') or '').strip()
+            media_value = url if url.startswith('http') else None
+            media_type  = (data.get('media_type') or '').strip()
 
         post = serializer.save(
             author=self.request.user,
-            media=file,
-            media_type=media_type
+            media=media_value,
+            media_type=media_type,
         )
 
-        # -------------------------
-        # Handle hashtags safely
-        # -------------------------
-        data = self.request.data
+        # Hashtags — Flutter sends 'hashtags' key, serializer has 'hashtag_names'
+        # Try both sources
+        hashtag_names = serializer.validated_data.get('hashtag_names', [])
 
-        if hasattr(data, 'getlist'):
-            hashtag_names = data.getlist('hashtag_names[]')
-        else:
-            hashtag_names = data.get('hashtag_names', [])
-
-        # fallback from serializer
         if not hashtag_names:
-            hashtag_names = serializer.validated_data.get(
-                'hashtag_names',
-                []
-            )
+            raw = data.get('hashtags') or data.get('hashtag_names') or []
+            if not raw and hasattr(data, 'getlist'):
+                raw = data.getlist('hashtags') or data.getlist('hashtag_names')
+            if isinstance(raw, str):
+                raw = [raw]
+            hashtag_names = raw
 
-        # convert string -> list
-        if isinstance(hashtag_names, str):
-            hashtag_names = [hashtag_names]
-
-        # Attach hashtags
         for name in hashtag_names:
-
             if not isinstance(name, str):
                 continue
-
             name = name.strip().lstrip('#').lower()
-
             if name:
-                tag, created = Hashtag.objects.get_or_create(name=name)
-
+                tag, _ = Hashtag.objects.get_or_create(name=name)
                 post.hashtags.add(tag)
-
-                tag.post_count += 1
+                tag.post_count = tag.post_count + 1
                 tag.save(update_fields=['post_count'])
 
-        # -------------------------
-        # Update author post count
-        # -------------------------
         try:
             profile = post.author.advocate_profile
             profile.post_count += 1
             profile.save(update_fields=['post_count'])
-
         except AdvocateProfile.DoesNotExist:
             pass
 
@@ -1763,14 +1752,11 @@ class PostMediaPresignView(APIView):
     """
     POST /api/feed/presign/
 
-    Community post ke media (image/video/document) ke liye presigned R2 URL.
-    Chat presign se alag — wahan room_id UUID required hai, post uploads ka koi room nahi.
+    Community post ke media ke liye presigned R2 URL.
+    Chat presign se alag — room_id UUID nahi chahiye.
 
-    Request body:
-        { "file_name": "photo.jpg", "mime_type": "image/jpeg" }
-
-    Response:
-        { "upload_url": "https://...", "file_url": "https://...", "key": "posts/.../uuid.jpg" }
+    Request: { "file_name": "photo.jpg", "mime_type": "image/jpeg" }
+    Response: { "upload_url": "...", "file_url": "...", "key": "..." }
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -1790,21 +1776,15 @@ class PostMediaPresignView(APIView):
         mime_type = (request.data.get('mime_type') or 'application/octet-stream').strip()
 
         if not file_name:
-            return Response(
-                {'error': 'file_name is required'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({'error': 'file_name is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         if mime_type not in self.ALLOWED_MIMES:
-            return Response(
-                {'error': 'File type not allowed'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({'error': 'File type not allowed'}, status=status.HTTP_400_BAD_REQUEST)
 
-        ext = file_name.rsplit('.', 1)[-1].lower() if '.' in file_name else ''
-        uid = _uuid.uuid4().hex
-        folder = _uuid.uuid4().hex  # path obfuscation
-        key = f"posts/{folder}/{uid}.{ext}" if ext else f"posts/{folder}/{uid}"
+        ext    = file_name.rsplit('.', 1)[-1].lower() if '.' in file_name else ''
+        uid    = _uuid.uuid4().hex
+        folder = _uuid.uuid4().hex
+        key    = f"posts/{folder}/{uid}.{ext}" if ext else f"posts/{folder}/{uid}"
 
         r2 = boto3.client(
             's3',
@@ -1817,18 +1797,10 @@ class PostMediaPresignView(APIView):
 
         upload_url = r2.generate_presigned_url(
             'put_object',
-            Params={
-                'Bucket': settings.R2_BUCKET_NAME,
-                'Key': key,
-                'ContentType': mime_type,
-            },
+            Params={'Bucket': settings.R2_BUCKET_NAME, 'Key': key, 'ContentType': mime_type},
             ExpiresIn=300,
         )
 
         file_url = f"{settings.R2_PUBLIC_URL.rstrip('/')}/{key}"
 
-        return Response({
-            'upload_url': upload_url,
-            'file_url':   file_url,
-            'key':        key,
-        }, status=status.HTTP_200_OK)
+        return Response({'upload_url': upload_url, 'file_url': file_url, 'key': key})
