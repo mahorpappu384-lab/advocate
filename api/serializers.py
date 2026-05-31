@@ -630,6 +630,12 @@ class PostSerializer(serializers.ModelSerializer):
             return False
         return SavedPost.objects.filter(user=request.user, post=obj).exists()
 
+    def create(self, validated_data):
+        # hashtag_names write_only field hai — Post model mein koi column nahi
+        # Pop karo warna Post.objects.create() TypeError deta hai
+        validated_data.pop('hashtag_names', None)
+        return super().create(validated_data)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CASE GROUP SERIALIZERS
