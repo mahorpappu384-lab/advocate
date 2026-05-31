@@ -552,7 +552,7 @@ class ChannelPostCommentSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChannelPostComment
         fields = ['id', 'post', 'author', 'content', 'parent', 'replies', 'created_at']
-        read_only_fields = ['id', 'author', 'created_at']
+        read_only_fields = ['id', 'post', 'author', 'created_at']
 
     def get_replies(self, obj):
         if obj.parent is None:
