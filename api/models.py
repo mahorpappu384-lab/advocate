@@ -551,10 +551,16 @@ class ChannelMembership(models.Model):
         ('moderator', 'Moderator'),
         ('admin', 'Admin'),
     ]
+    STATUS_CHOICES = [
+        ('active', 'Active'),
+        ('pending', 'Pending Approval'),  # Private channel join request
+        ('banned', 'Banned'),
+    ]
 
     channel = models.ForeignKey(Channel, on_delete=models.CASCADE, related_name='memberships')
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='channel_memberships')
     role = models.CharField(max_length=15, choices=ROLES, default='member')
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='active')
     joined_at = models.DateTimeField(auto_now_add=True)
     is_muted = models.BooleanField(default=False)
     notifications_enabled = models.BooleanField(default=True)

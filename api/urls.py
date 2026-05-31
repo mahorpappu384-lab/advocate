@@ -106,8 +106,12 @@ urlpatterns = [
     path('channels/mine/',                             views.MyChannelsView.as_view(),                name='my-channels'),
     path('channels/<uuid:id>/',                        views.ChannelDetailView.as_view(),             name='channel-detail'),
     path('channels/<uuid:id>/update/',                 views.UpdateChannelView.as_view(),             name='channel-update'),
-    path('channels/<uuid:pk>/join/',                   views.JoinChannelView.as_view(),               name='join-channel'),
+        path('channels/<uuid:pk>/join/',                   views.JoinChannelView.as_view(),               name='join-channel'),
     path('channels/<uuid:pk>/leave/',                  views.LeaveChannelView.as_view(),              name='leave-channel'),
+    path('channels/icon-presign/',                     views.ChannelIconPresignView.as_view(),         name='channel-icon-presign'),
+    path('channels/<uuid:channel_id>/posts/presign/',  views.ChannelPostPresignView.as_view(),         name='channel-post-presign'),
+    path('channels/<uuid:pk>/join-requests/',          views.ChannelJoinRequestListView.as_view(),     name='channel-join-requests'),
+    path('channels/<uuid:pk>/join-requests/<uuid:user_id>/<str:action>/', views.ChannelJoinRequestActionView.as_view(), name='channel-join-request-action'),
     path('channels/<uuid:channel_id>/sub-channels/',   views.SubChannelListCreateView.as_view(),      name='sub-channels'),        # Sub-channels
     path('channels/<uuid:channel_id>/posts/',          views.ChannelPostListCreateView.as_view(),     name='channel-posts'),       # ?sub_channel=<id>
     path('channels/posts/<uuid:pk>/like/',             views.ChannelPostLikeView.as_view(),           name='channel-post-like'),

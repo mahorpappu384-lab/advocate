@@ -1053,28 +1053,219 @@ class CreateChannelView(generics.CreateAPIView):
 
 
 class JoinChannelView(APIView):
+    """
+    POST /api/channels/<uuid>/join/
+    Public channel  → direct join
+    Private channel → creates pending join request (admin must approve)
+    """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
         channel = get_object_or_404(Channel, id=pk)
-        _, created = ChannelMembership.objects.get_or_create(channel=channel, user=request.user)
-        if not created:
+        existing = ChannelMembership.objects.filter(channel=channel, user=request.user).first()
+        if existing:
+            if existing.status == 'pending':
+                return Response({"error": "Join request already pending."}, status=400)
             return Response({"error": "Already a member."}, status=400)
-        channel.member_count += 1
-        channel.save(update_fields=['member_count'])
-        return Response({"message": f"Joined {channel.name}."}, status=201)
+
+        if channel.is_private:
+            # Private channel — create pending membership, notify admin
+            membership = ChannelMembership.objects.create(
+                channel=channel, user=request.user, role='member', status='pending'
+            )
+            # Notify channel admin
+            admin_membership = channel.memberships.filter(role='admin').first()
+            if admin_membership:
+                create_notification(
+                    recipient=admin_membership.user,
+                    sender=request.user,
+                    notif_type='channel_update',
+                    title=f'Join request: {channel.name}',
+                    body=f'{request.user.full_name} wants to join {channel.name}',
+                    data={'channel_id': str(channel.id), 'user_id': str(request.user.id)},
+                )
+            return Response({
+                "message": "Join request sent. Waiting for admin approval.",
+                "status": "pending"
+            }, status=201)
+        else:
+            ChannelMembership.objects.create(channel=channel, user=request.user, role='member', status='active')
+            channel.member_count += 1
+            channel.save(update_fields=['member_count'])
+            return Response({"message": f"Joined {channel.name}.", "status": "active"}, status=201)
 
 
 class LeaveChannelView(APIView):
+    """
+    POST /api/channels/<uuid>/leave/   — Flutter uses POST
+    DELETE /api/channels/<uuid>/leave/ — also supported
+    """
     permission_classes = [permissions.IsAuthenticated]
 
+    def post(self, request, pk):
+        return self._leave(request, pk)
+
     def delete(self, request, pk):
+        return self._leave(request, pk)
+
+    def _leave(self, request, pk):
         channel = get_object_or_404(Channel, id=pk)
         deleted, _ = ChannelMembership.objects.filter(channel=channel, user=request.user).delete()
         if deleted:
             channel.member_count = max(0, channel.member_count - 1)
             channel.save(update_fields=['member_count'])
         return Response(status=204)
+
+
+class ChannelJoinRequestListView(APIView):
+    """
+    GET  /api/channels/<uuid>/join-requests/     — list pending requests (admin only)
+    POST /api/channels/<uuid>/join-requests/<user_id>/approve/  — approve
+    POST /api/channels/<uuid>/join-requests/<user_id>/reject/   — reject
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        channel = get_object_or_404(Channel, id=pk)
+        # Only admin can see requests
+        if not channel.memberships.filter(user=request.user, role='admin').exists():
+            return Response({"error": "Only admins can view join requests."}, status=403)
+        pending = ChannelMembership.objects.filter(channel=channel, status='pending').select_related('user')
+        data = [
+            {
+                "user_id": str(m.user.id),
+                "full_name": m.user.full_name,
+                "username": m.user.username,
+                "requested_at": m.joined_at.isoformat(),
+            }
+            for m in pending
+        ]
+        return Response(data)
+
+
+class ChannelJoinRequestActionView(APIView):
+    """
+    POST /api/channels/<uuid>/join-requests/<user_id>/approve/
+    POST /api/channels/<uuid>/join-requests/<user_id>/reject/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk, user_id, action):
+        channel = get_object_or_404(Channel, id=pk)
+        if not channel.memberships.filter(user=request.user, role='admin').exists():
+            return Response({"error": "Only admins can approve/reject requests."}, status=403)
+
+        membership = get_object_or_404(ChannelMembership, channel=channel, user_id=user_id, status='pending')
+        target_user = membership.user
+
+        if action == 'approve':
+            membership.status = 'active'
+            membership.save(update_fields=['status'])
+            channel.member_count += 1
+            channel.save(update_fields=['member_count'])
+            create_notification(
+                recipient=target_user,
+                sender=request.user,
+                notif_type='channel_update',
+                title=f'Request approved: {channel.name}',
+                body=f'You have been approved to join {channel.name}',
+                data={'channel_id': str(channel.id)},
+            )
+            return Response({"message": "Request approved."})
+        elif action == 'reject':
+            membership.delete()
+            create_notification(
+                recipient=target_user,
+                sender=request.user,
+                notif_type='channel_update',
+                title=f'Request declined: {channel.name}',
+                body=f'Your request to join {channel.name} was declined.',
+                data={'channel_id': str(channel.id)},
+            )
+            return Response({"message": "Request rejected."})
+        else:
+            return Response({"error": "Invalid action."}, status=400)
+
+
+class ChannelIconPresignView(APIView):
+    """
+    POST /api/channels/icon-presign/
+    Flutter se seedha R2 pe channel icon/cover upload ke liye presigned URL.
+    Body: { file_name, mime_type, upload_type: 'icon'|'cover' }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        file_name   = request.data.get('file_name', 'channel_icon.jpg')
+        mime_type   = request.data.get('mime_type', 'image/jpeg')
+        upload_type = request.data.get('upload_type', 'icon')  # 'icon' or 'cover'
+
+        try:
+            r2 = boto3.client(
+                's3',
+                endpoint_url=settings.CLOUDFLARE_R2_ENDPOINT,
+                aws_access_key_id=settings.CLOUDFLARE_R2_ACCESS_KEY,
+                aws_secret_access_key=settings.CLOUDFLARE_R2_SECRET_KEY,
+                config=BotoConfig(signature_version='s3v4'),
+                region_name='auto',
+            )
+            unique_name = f"channel_{upload_type}s/{_uuid.uuid4()}_{file_name}"
+            upload_url = r2.generate_presigned_url(
+                'put_object',
+                Params={
+                    'Bucket': settings.CLOUDFLARE_R2_BUCKET_NAME,
+                    'Key': unique_name,
+                    'ContentType': mime_type,
+                },
+                ExpiresIn=300,
+            )
+            file_url = f"{settings.CLOUDFLARE_R2_PUBLIC_URL}/{unique_name}"
+            return Response({'upload_url': upload_url, 'file_url': file_url})
+        except Exception as e:
+            logger.error(f"Channel icon presign error: {e}")
+            return Response({'error': 'Failed to generate upload URL.'}, status=500)
+
+
+class ChannelPostPresignView(APIView):
+    """
+    POST /api/channels/<uuid>/posts/presign/
+    Flutter se direct R2 upload ke liye presigned URL (channel post attachment).
+    Body: { file_name, mime_type }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, channel_id):
+        channel = get_object_or_404(Channel, id=channel_id)
+        if not channel.memberships.filter(user=request.user, status='active').exists():
+            return Response({'error': 'You must be a member to post.'}, status=403)
+
+        file_name = request.data.get('file_name', 'attachment.jpg')
+        mime_type = request.data.get('mime_type', 'image/jpeg')
+
+        try:
+            r2 = boto3.client(
+                's3',
+                endpoint_url=settings.CLOUDFLARE_R2_ENDPOINT,
+                aws_access_key_id=settings.CLOUDFLARE_R2_ACCESS_KEY,
+                aws_secret_access_key=settings.CLOUDFLARE_R2_SECRET_KEY,
+                config=BotoConfig(signature_version='s3v4'),
+                region_name='auto',
+            )
+            unique_name = f"channel_attachments/{channel_id}/{_uuid.uuid4()}_{file_name}"
+            upload_url = r2.generate_presigned_url(
+                'put_object',
+                Params={
+                    'Bucket': settings.CLOUDFLARE_R2_BUCKET_NAME,
+                    'Key': unique_name,
+                    'ContentType': mime_type,
+                },
+                ExpiresIn=300,
+            )
+            file_url = f"{settings.CLOUDFLARE_R2_PUBLIC_URL}/{unique_name}"
+            return Response({'upload_url': upload_url, 'file_url': file_url})
+        except Exception as e:
+            logger.error(f"Channel post presign error: {e}")
+            return Response({'error': 'Failed to generate upload URL.'}, status=500)
 
 
 class SubChannelListCreateView(generics.ListCreateAPIView):
@@ -1126,21 +1317,53 @@ class ChannelPostListCreateView(generics.ListCreateAPIView):
         return qs
 
     def perform_create(self, serializer):
-        channel = get_object_or_404(
-            Channel, id=self.kwargs['channel_id'],
-            memberships__user=self.request.user,
-        )
+        channel = get_object_or_404(Channel, id=self.kwargs['channel_id'])
+        # Check membership (active only — not pending)
+        if not channel.memberships.filter(user=self.request.user, status='active').exists():
+            # Also allow channel creator even without active membership row
+            if channel.created_by != self.request.user:
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied('You must be an active member to post.')
+
+        # Support two attachment modes:
+        # 1. Direct file upload (FormData) — old way
+        # 2. R2 URL string — new way (Flutter uploads to R2 directly, sends URL)
         attachment = self.request.FILES.get('attachment')
-        att_type   = get_file_type(attachment) if attachment else ''
+        attachment_url_r2 = self.request.data.get('attachment_url')  # R2 public URL
+
+        att_type = ''
+        if attachment:
+            att_type = get_file_type(attachment)
+        elif attachment_url_r2:
+            # Detect type from URL extension
+            url_lower = attachment_url_r2.lower()
+            if any(url_lower.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
+                att_type = 'image'
+            elif url_lower.endswith('.pdf'):
+                att_type = 'pdf'
+            elif any(url_lower.endswith(ext) for ext in ['.mp4', '.mov', '.webm']):
+                att_type = 'video'
+            else:
+                att_type = self.request.data.get('attachment_type', 'file')
+
         sub_channel_id = self.request.data.get('sub_channel')
         sub_channel = None
         if sub_channel_id:
             sub_channel = SubChannel.objects.filter(id=sub_channel_id, parent=channel).first()
-        serializer.save(
-            author=self.request.user, channel=channel,
-            attachment=attachment, attachment_type=att_type,
+
+        save_kwargs = dict(
+            author=self.request.user,
+            channel=channel,
+            attachment_type=att_type,
             sub_channel=sub_channel,
         )
+        if attachment:
+            save_kwargs['attachment'] = attachment
+        elif attachment_url_r2:
+            # Store R2 URL directly in attachment field (CharField-compatible)
+            save_kwargs['attachment'] = attachment_url_r2
+
+        serializer.save(**save_kwargs)
 
 
 class ChannelPostLikeView(APIView):

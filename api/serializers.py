@@ -457,31 +457,50 @@ class CreateGroupChatSerializer(serializers.Serializer):
 
 class SubChannelSerializer(serializers.ModelSerializer):
     """Channel screen: sub-channel list inside a parent channel."""
+    # Flutter SubChannelModel expects 'channel' field (parent channel UUID)
+    channel = serializers.UUIDField(source='parent.id', read_only=True)
+    is_default = serializers.SerializerMethodField()
+
     class Meta:
         model = SubChannel
-        fields = ['id', 'name', 'slug', 'description', 'unread_count', 'created_at']
-        read_only_fields = ['id', 'slug', 'created_at']
+        fields = ['id', 'channel', 'name', 'slug', 'description', 'unread_count',
+                  'is_default', 'created_at']
+        read_only_fields = ['id', 'channel', 'slug', 'created_at']
+
+    def get_is_default(self, obj):
+        """First sub-channel in the parent is treated as default."""
+        first = SubChannel.objects.filter(parent=obj.parent, is_active=True).order_by('created_at').first()
+        return first.id == obj.id if first else False
 
 
 class ChannelSerializer(serializers.ModelSerializer):
     created_by = UserMiniSerializer(read_only=True)
-    is_member = serializers.SerializerMethodField()
+    # Flutter ChannelModel uses 'is_joined' — keep both for compatibility
+    is_joined = serializers.SerializerMethodField()
+    is_member = serializers.SerializerMethodField()   # backward-compat alias
     user_role = serializers.SerializerMethodField()
     sub_channels = SubChannelSerializer(many=True, read_only=True)
+    unread_count = serializers.SerializerMethodField()
+    # icon/cover — return full URL when stored as R2 URL field or ImageField
+    icon_url = serializers.SerializerMethodField()
+    cover_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Channel
-        fields = ['id', 'name', 'slug', 'description', 'channel_type', 'icon',
-                  'cover', 'court_name', 'city', 'state', 'is_official', 'is_private',
-                  'pinned_message', 'created_by', 'member_count', 'is_member',
-                  'user_role', 'sub_channels', 'created_at']
+        fields = ['id', 'name', 'slug', 'description', 'channel_type', 'icon', 'icon_url',
+                  'cover', 'cover_url', 'court_name', 'city', 'state', 'is_official', 'is_private',
+                  'pinned_message', 'created_by', 'member_count', 'is_joined', 'is_member',
+                  'user_role', 'sub_channels', 'unread_count', 'created_at']
         read_only_fields = ['id', 'slug', 'created_by', 'member_count', 'created_at']
 
-    def get_is_member(self, obj):
+    def get_is_joined(self, obj):
         request = self.context.get('request')
         if not request or not request.user.is_authenticated:
             return False
         return obj.memberships.filter(user=request.user).exists()
+
+    def get_is_member(self, obj):
+        return self.get_is_joined(obj)
 
     def get_user_role(self, obj):
         request = self.context.get('request')
@@ -489,6 +508,33 @@ class ChannelSerializer(serializers.ModelSerializer):
             return None
         membership = obj.memberships.filter(user=request.user).first()
         return membership.role if membership else None
+
+    def get_unread_count(self, obj):
+        # Placeholder — can be computed from last read tracking later
+        return 0
+
+    def get_icon_url(self, obj):
+        """Return icon URL — works for both ImageField and URLField."""
+        if not obj.icon:
+            return None
+        request = self.context.get('request')
+        url = str(obj.icon)
+        if url.startswith('http'):
+            return url
+        if request:
+            return request.build_absolute_uri(url)
+        return url
+
+    def get_cover_url(self, obj):
+        if not obj.cover:
+            return None
+        request = self.context.get('request')
+        url = str(obj.cover)
+        if url.startswith('http'):
+            return url
+        if request:
+            return request.build_absolute_uri(url)
+        return url
 
 
 class ChannelPostCommentSerializer(serializers.ModelSerializer):
@@ -512,13 +558,13 @@ class ChannelPostSerializer(serializers.ModelSerializer):
     author = UserMiniSerializer(read_only=True)
     comments = ChannelPostCommentSerializer(many=True, read_only=True)
     is_liked = serializers.SerializerMethodField()
-    # Channel screen: which sub-channel this post belongs to
     sub_channel_name = serializers.SerializerMethodField()
+    attachment_url = serializers.SerializerMethodField()
 
     class Meta:
         model = ChannelPost
         fields = ['id', 'channel', 'sub_channel', 'sub_channel_name', 'author',
-                  'content', 'attachment', 'attachment_type',
+                  'content', 'attachment', 'attachment_url', 'attachment_type',
                   'is_pinned', 'is_announcement', 'like_count', 'comment_count',
                   'comments', 'is_liked', 'created_at', 'updated_at']
         read_only_fields = ['id', 'author', 'like_count', 'comment_count', 'created_at']
@@ -531,6 +577,17 @@ class ChannelPostSerializer(serializers.ModelSerializer):
 
     def get_sub_channel_name(self, obj):
         return obj.sub_channel.name if obj.sub_channel else None
+
+    def get_attachment_url(self, obj):
+        if not obj.attachment:
+            return None
+        url = str(obj.attachment)
+        if url.startswith('http'):
+            return url
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(url)
+        return url
 
 
 # ══════════════════════════════════════════════════════════════════════════════
