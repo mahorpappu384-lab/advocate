@@ -113,6 +113,9 @@ urlpatterns = [
     path('channels/<uuid:pk>/join-requests/',          views.ChannelJoinRequestListView.as_view(),     name='channel-join-requests'),
     path('channels/<uuid:pk>/join-requests/<uuid:user_id>/<str:action>/', views.ChannelJoinRequestActionView.as_view(), name='channel-join-request-action'),
     path('channels/<uuid:channel_id>/sub-channels/',   views.SubChannelListCreateView.as_view(),      name='sub-channels'),        # Sub-channels
+    # ── Admin default sub-channel set kare ───────────────────────────────────
+    path('channels/<uuid:channel_id>/sub-channels/<uuid:sub_id>/set-default/',
+         views.SetDefaultSubChannelView.as_view(), name='set-default-subchannel'),
     path('channels/<uuid:channel_id>/members/',        views.ChannelMembersListView.as_view(),         name='channel-members'),      # Members list
     path('channels/<uuid:channel_id>/posts/',          views.ChannelPostListCreateView.as_view(),     name='channel-posts'),       # ?sub_channel=<id>
     path('channels/posts/<uuid:pk>/like/',             views.ChannelPostLikeView.as_view(),           name='channel-post-like'),

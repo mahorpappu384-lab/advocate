@@ -459,18 +459,14 @@ class SubChannelSerializer(serializers.ModelSerializer):
     """Channel screen: sub-channel list inside a parent channel."""
     # Flutter SubChannelModel expects 'channel' field (parent channel UUID)
     channel = serializers.UUIDField(source='parent.id', read_only=True)
-    is_default = serializers.SerializerMethodField()
+    # FIXED: is_default ab direct model field hai — computed SerializerMethodField nahi
+    # is_default writable hai taaki create/update mein pass ho sake
 
     class Meta:
         model = SubChannel
         fields = ['id', 'channel', 'name', 'slug', 'description', 'unread_count',
                   'is_default', 'created_at']
         read_only_fields = ['id', 'channel', 'slug', 'created_at']
-
-    def get_is_default(self, obj):
-        """First sub-channel in the parent is treated as default."""
-        first = SubChannel.objects.filter(parent=obj.parent, is_active=True).order_by('created_at').first()
-        return first.id == obj.id if first else False
 
 
 class ChannelSerializer(serializers.ModelSerializer):

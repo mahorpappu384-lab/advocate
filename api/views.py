@@ -999,7 +999,9 @@ class ChannelListView(generics.ListAPIView):
     ordering           = ['-member_count']
 
     def get_queryset(self):
-        return Channel.objects.filter(is_private=False).prefetch_related('sub_channels')
+        # FIXED: is_private=False filter hataya — private channels bhi search mein dikhenge
+        # Flutter side pe private channels ke liye "Request to Join" button dikhaega
+        return Channel.objects.all().prefetch_related('sub_channels')
 
 
 class MyChannelsView(generics.ListAPIView):
@@ -1055,6 +1057,16 @@ class CreateChannelView(generics.CreateAPIView):
         ChannelMembership.objects.create(channel=channel, user=self.request.user, role='admin')
         channel.member_count = 1
         channel.save(update_fields=['member_count'])
+
+        # FIXED: Auto "General" sub-channel banao with is_default=True
+        if not SubChannel.objects.filter(parent=channel, slug='general').exists():
+            SubChannel.objects.create(
+                parent=channel,
+                name='General',
+                slug='general',
+                description='General discussion',
+                is_default=True,
+            )
 
 
 class JoinChannelView(APIView):
@@ -1340,7 +1352,7 @@ class SubChannelListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         channel = get_object_or_404(Channel, id=self.kwargs['channel_id'])
-        return SubChannel.objects.filter(parent=channel, is_active=True)
+        return SubChannel.objects.filter(parent=channel, is_active=True).order_by('-is_default', 'created_at')
 
     def perform_create(self, serializer):
         channel = get_object_or_404(Channel, id=self.kwargs['channel_id'])
@@ -1356,7 +1368,46 @@ class SubChannelListCreateView(generics.ListCreateAPIView):
         base_slug, counter = slug, 1
         while SubChannel.objects.filter(parent=channel, slug=slug).exists():
             slug = f"{base_slug}-{counter}"; counter += 1
-        serializer.save(parent=channel, slug=slug)
+
+        # FIXED: is_default sirf tab True ho jab explicitly pass kiya jaye
+        is_default = serializer.validated_data.get('is_default', False)
+
+        # Agar is_default=True hai, pehle se jo default tha use False karo
+        if is_default:
+            SubChannel.objects.filter(parent=channel, is_default=True).update(is_default=False)
+
+        serializer.save(parent=channel, slug=slug, is_default=is_default)
+
+
+class SetDefaultSubChannelView(APIView):
+    """
+    POST /api/channels/<channel_id>/sub-channels/<sub_id>/set-default/
+    Admin apni marzi se kisi bhi sub-channel ko default set kar sakta hai.
+    Pehle jo default tha wo automatically unset ho jaata hai.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, channel_id, sub_id):
+        channel = get_object_or_404(Channel, id=channel_id)
+
+        # Only admin can set default
+        if not channel.memberships.filter(user=request.user, role='admin').exists():
+            return Response({"error": "Only admins can set the default sub-channel."}, status=403)
+
+        sub = get_object_or_404(SubChannel, id=sub_id, parent=channel, is_active=True)
+
+        # Pehle sab ka is_default False karo
+        SubChannel.objects.filter(parent=channel, is_default=True).update(is_default=False)
+
+        # Ab is sub-channel ko default banao
+        sub.is_default = True
+        sub.save(update_fields=['is_default'])
+
+        return Response({
+            "message": f"'{sub.name}' is now the default sub-channel.",
+            "sub_channel_id": str(sub.id),
+            "is_default": True,
+        })
 
 
 class ChannelPostListCreateView(generics.ListCreateAPIView):

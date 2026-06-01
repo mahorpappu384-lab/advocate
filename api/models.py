@@ -535,12 +535,14 @@ class SubChannel(models.Model):
     description = models.TextField(blank=True)
     unread_count = models.PositiveIntegerField(default=0)  # Badge number on channel list
     is_active = models.BooleanField(default=True)
+    # ── Admin apni marzi se default sub-channel set kar sakta hai ─────────────
+    is_default = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'sub_channels'
         unique_together = ('parent', 'slug')
-        ordering = ['name']
+        ordering = ['-is_default', 'created_at']   # Default pehle aaye, phir creation order
 
     def __str__(self):
         return f"{self.parent.name} → {self.name}"
