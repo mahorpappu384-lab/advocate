@@ -128,6 +128,8 @@ urlpatterns = [
     path('feed/',                           views.FeedListCreateView.as_view(),    name='feed'),               # ?hashtag=SupremeCourt
     path('feed/trending/',                  views.TrendingHashtagsView.as_view(),  name='trending-hashtags'),   # Trending Now sidebar
     path('feed/saved/',                     views.SavedPostListView.as_view(),     name='saved-posts'),         # Saved posts
+    # ⚠️ IMPORTANT: feed/search/ MUST be before feed/<uuid:pk>/ — warna Django 'search' ko UUID samajh leta hai
+    path('feed/search/',                    views.PostSearchView.as_view(),        name='post-search'),         # Search posts
     path('feed/<uuid:pk>/',                 views.PostDetailView.as_view(),        name='post-detail'),
     path('feed/<uuid:pk>/react/',           views.PostReactView.as_view(),         name='post-react'),
     path('feed/<uuid:pk>/save/',            views.SavePostView.as_view(),          name='save-post'),           # Save/unsave

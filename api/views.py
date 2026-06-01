@@ -2229,3 +2229,115 @@ class PostMediaPresignView(APIView):
         file_url = f"{settings.R2_PUBLIC_URL.rstrip('/')}/{key}"
 
         return Response({'upload_url': upload_url, 'file_url': file_url, 'key': key})
+
+class PostSearchView(generics.ListAPIView):
+    """
+    GET /api/feed/search/
+    Params:
+      q         — search query (required)
+      post_type — optional filter (judgment, legal_update, discussion, etc.)
+      page      — pagination (default 20 per page)
+
+    Ranking logic (manual scoring, no Postgres full-text needed):
+      1. Exact hashtag match  → score +30
+      2. Query in content     → score +20 (higher if starts with query)
+      3. Query in author name → score +10
+      4. Like count boost     → score + (like_count * 0.1), max +10
+
+    Final order: score DESC, created_at DESC (recency tiebreak)
+    """
+    serializer_class   = PostSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        query     = (self.request.query_params.get('q') or '').strip()
+        post_type = (self.request.query_params.get('post_type') or '').strip()
+
+        # Query aur post_type dono empty hain — kuch mat do
+        if not query and not post_type:
+            return Post.objects.none()
+
+        # Handle hashtag search: "#SupremeCourt" → search by hashtag
+        is_hashtag_search = query.startswith('#')
+        clean_query       = query.lstrip('#').lower()
+
+        # Base queryset — only public posts ya apne posts
+        qs = Post.objects.filter(
+            Q(is_public=True) | Q(author=self.request.user)
+        ).select_related('author').prefetch_related('hashtags')
+
+        # Optional post_type filter
+        if post_type:
+            qs = qs.filter(post_type=post_type)
+
+        # Query filter — sirf tab lagao jab query ho
+        if query:
+            if is_hashtag_search:
+                # Hashtag search — exact match first, then partial
+                qs = qs.filter(hashtags__name__icontains=clean_query).distinct()
+            else:
+                # Full text search: content OR author name OR hashtag name
+                qs = qs.filter(
+                    Q(content__icontains=clean_query)
+                    | Q(author__full_name__icontains=clean_query)
+                    | Q(author__username__icontains=clean_query)
+                    | Q(hashtags__name__icontains=clean_query)
+                ).distinct()
+
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        query      = (request.query_params.get('q') or '').strip()
+        clean_query = query.lstrip('#').lower()
+        queryset    = self.get_queryset()
+
+        # ── Relevance scoring ─────────────────────────────────────────────────
+        def score(post):
+            s = 0
+
+            # Hashtag exact match → strongest signal
+            hashtag_names = [h.name.lower() for h in post.hashtags.all()]
+            if clean_query in hashtag_names:
+                s += 30
+            elif any(clean_query in hn for hn in hashtag_names):
+                s += 15
+
+            # Content match
+            content_lower = post.content.lower()
+            if content_lower.startswith(clean_query):
+                s += 25
+            elif clean_query in content_lower:
+                s += 20
+
+            # Author name match
+            if clean_query in post.author.full_name.lower():
+                s += 10
+            if clean_query in post.author.username.lower():
+                s += 8
+
+            # Engagement boost (capped at +10)
+            s += min(post.like_count * 0.1, 10)
+
+            return s
+
+        # Score and sort
+        posts  = list(queryset)
+        scored = sorted(posts, key=lambda p: (-score(p), -p.created_at.timestamp()))
+
+        # Manual pagination
+        try:
+            page_num  = int(request.query_params.get('page', 1))
+        except ValueError:
+            page_num  = 1
+        page_size = 20
+        start     = (page_num - 1) * page_size
+        end       = start + page_size
+        page_data = scored[start:end]
+
+        serializer = self.get_serializer(page_data, many=True, context={'request': request})
+        return Response({
+            'count':    len(scored),
+            'next':     None if end >= len(scored) else f"?q={query}&page={page_num + 1}",
+            'previous': None if page_num <= 1 else f"?q={query}&page={page_num - 1}",
+            'results':  serializer.data,
+        })
