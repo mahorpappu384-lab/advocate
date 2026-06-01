@@ -650,6 +650,17 @@ class PendingConnectionsView(generics.ListAPIView):
         ).select_related('sender')
 
 
+class SentConnectionsView(generics.ListAPIView):
+    serializer_class   = ConnectionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        # Apne bheje hue pending requests — jo abhi accept/reject nahi hue
+        return Connection.objects.filter(
+            sender=self.request.user, status='pending'
+        ).select_related('receiver')
+
+
 class SendConnectionRequestView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 

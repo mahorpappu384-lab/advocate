@@ -77,6 +77,7 @@ urlpatterns = [
     # ══════════════════════════════════════════════════════════════════════════
     path('connections/',                       views.ConnectionListView.as_view(),       name='connection-list'),
     path('connections/pending/',               views.PendingConnectionsView.as_view(),   name='pending-connections'),
+    path('connections/sent/',                  views.SentConnectionsView.as_view(),      name='sent-connections'),
     path('connections/send/',                  views.SendConnectionRequestView.as_view(),name='send-connection'),
     path('connections/<uuid:pk>/',             views.ConnectionDetailView.as_view(),     name='connection-detail'),
     path('follow/<uuid:user_id>/',             views.FollowView.as_view(),               name='follow'),
