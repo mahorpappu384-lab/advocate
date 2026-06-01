@@ -301,10 +301,54 @@ class ConnectionSerializer(serializers.ModelSerializer):
     sender = UserMiniSerializer(read_only=True)
     receiver = UserMiniSerializer(read_only=True)
 
+    # Flutter ke liye shortcut fields — dono tabs (Sent + Pending) mein use hote hain
+    sender_name = serializers.SerializerMethodField()
+    receiver_name = serializers.SerializerMethodField()
+    sender_photo = serializers.SerializerMethodField()
+    receiver_photo = serializers.SerializerMethodField()
+    sender_court = serializers.SerializerMethodField()
+    receiver_court = serializers.SerializerMethodField()
+
     class Meta:
         model = Connection
-        fields = ['id', 'sender', 'receiver', 'status', 'message', 'created_at', 'updated_at']
+        fields = [
+            'id', 'sender', 'receiver', 'status', 'message', 'created_at', 'updated_at',
+            # Shortcut fields
+            'sender_name', 'receiver_name',
+            'sender_photo', 'receiver_photo',
+            'sender_court', 'receiver_court',
+        ]
         read_only_fields = ['id', 'sender', 'status', 'created_at', 'updated_at']
+
+    def get_sender_name(self, obj):
+        return obj.sender.full_name if obj.sender else ''
+
+    def get_receiver_name(self, obj):
+        return obj.receiver.full_name if obj.receiver else ''
+
+    def get_sender_photo(self, obj):
+        try:
+            return obj.sender.advocate_profile.profile_photo or None
+        except Exception:
+            return None
+
+    def get_receiver_photo(self, obj):
+        try:
+            return obj.receiver.advocate_profile.profile_photo or None
+        except Exception:
+            return None
+
+    def get_sender_court(self, obj):
+        try:
+            return obj.sender.advocate_profile.primary_court or ''
+        except Exception:
+            return ''
+
+    def get_receiver_court(self, obj):
+        try:
+            return obj.receiver.advocate_profile.primary_court or ''
+        except Exception:
+            return ''
 
 
 class ConnectionRequestSerializer(serializers.Serializer):
