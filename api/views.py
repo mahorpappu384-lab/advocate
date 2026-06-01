@@ -1276,6 +1276,59 @@ class ChannelPostPresignView(APIView):
             return Response({'error': 'Failed to generate upload URL.'}, status=500)
 
 
+class ChannelMembersListView(generics.ListAPIView):
+    """
+    GET /api/channels/<channel_id>/members/
+    Returns all active members of a channel with their user info and role.
+    Only accessible by channel members.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, channel_id):
+        channel = get_object_or_404(Channel, id=channel_id)
+
+        # Only members can see the member list
+        is_member = ChannelMembership.objects.filter(
+            channel=channel, user=request.user, status='active'
+        ).exists()
+        if not is_member and not channel.is_official:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("You must be a member to view the member list.")
+
+        memberships = ChannelMembership.objects.filter(
+            channel=channel
+        ).select_related('user').order_by('role', 'joined_at')
+
+        data = []
+        for m in memberships:
+            u = m.user
+            profile_photo = None
+            if hasattr(u, 'profile_photo') and u.profile_photo:
+                try:
+                    profile_photo = request.build_absolute_uri(u.profile_photo.url)
+                except Exception:
+                    pass
+            data.append({
+                'membership_id': str(m.id) if hasattr(m, 'id') else None,
+                'role': m.role,
+                'status': m.status,
+                'joined_at': m.joined_at.isoformat() if m.joined_at else None,
+                'is_muted': m.is_muted,
+                'user': {
+                    'id': str(u.id),
+                    'full_name': getattr(u, 'full_name', '') or u.username,
+                    'username': u.username,
+                    'email': u.email,
+                    'profile_photo': profile_photo,
+                    'is_advocate': getattr(u, 'is_advocate', False),
+                    'advocate_status': getattr(u, 'advocate_status', None),
+                    'presence_status': getattr(u, 'presence_status', 'offline'),
+                },
+            })
+
+        return Response(data)
+
+
 class SubChannelListCreateView(generics.ListCreateAPIView):
     """
     GET  /api/channels/<channel_id>/sub-channels/   — list sub-channels
