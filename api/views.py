@@ -1127,6 +1127,13 @@ class LeaveChannelView(APIView):
 
     def _leave(self, request, pk):
         channel = get_object_or_404(Channel, id=pk)
+        # Admin apna channel leave nahi kar sakta
+        is_admin = channel.memberships.filter(user=request.user, role='admin').exists()
+        if is_admin:
+            return Response(
+                {"error": "Channel admin leave nahi kar sakta. Pehle kisi aur ko admin banao."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         deleted, _ = ChannelMembership.objects.filter(channel=channel, user=request.user).delete()
         if deleted:
             channel.member_count = max(0, channel.member_count - 1)
