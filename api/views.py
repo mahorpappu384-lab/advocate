@@ -467,33 +467,21 @@ class MyAdvocateProfileView(generics.RetrieveUpdateAPIView):
     def update(self, request, *args, **kwargs):
         """
         PATCH /api/advocates/me/
-        
-        Cloudinary URL fields — direct URL se photo update karo.
-        profile_photo_url  → profile.profile_photo field mein save hoga
-        cover_photo_url    → profile.cover_photo field mein save hoga
-        
-        Ye fields AdvocateProfileSerializer mein directly nahi hain
-        isliye manually handle karo before serializer call.
+
+        profile_photo_url / cover_photo_url -> URLField mein save hoga (R2/Cloudflare URL).
+        Ye extra keys serializer mein nahi hain isliye manually inject karo.
         """
-        profile = self.get_object()
-        extra_fields = {}
+        # Mutable copy banao
+        data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
 
-        # ✅ Cloudinary URL se profile photo update
-        if request.data.get('profile_photo_url'):
-            profile.profile_photo = request.data['profile_photo_url']
-            extra_fields['profile_photo'] = request.data['profile_photo_url']
+        if data.get('profile_photo_url'):
+            data['profile_photo'] = data['profile_photo_url']
 
-        # ✅ Cloudinary URL se cover/banner photo update
-        if request.data.get('cover_photo_url'):
-            profile.cover_photo = request.data['cover_photo_url']
-            extra_fields['cover_photo'] = request.data['cover_photo_url']
+        if data.get('cover_photo_url'):
+            data['cover_photo'] = data['cover_photo_url']
 
-        # Save URL fields agar koi hai toh
-        if extra_fields:
-            profile.save(update_fields=list(extra_fields.keys()))
-
-        # Baaki fields ke liye normal serializer update
         kwargs['partial'] = True
+        request._full_data = data
         return super().update(request, *args, **kwargs)
 
 

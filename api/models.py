@@ -187,7 +187,7 @@ class AdvocateProfile(models.Model):
 
     # Profile
     profile_photo = models.URLField(max_length=500, blank=True, null=True)
-    cover_photo = models.ImageField(upload_to='cover_photos/', blank=True, null=True)
+    cover_photo = models.URLField(max_length=500, blank=True, null=True)
     bio = models.TextField(max_length=2000, blank=True)
     tagline = models.CharField(max_length=200, blank=True)
 
