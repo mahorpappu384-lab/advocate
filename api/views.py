@@ -468,21 +468,40 @@ class MyAdvocateProfileView(generics.RetrieveUpdateAPIView):
         """
         PATCH /api/advocates/me/
 
-        profile_photo_url / cover_photo_url -> URLField mein save hoga (R2/Cloudflare URL).
-        Ye extra keys serializer mein nahi hain isliye manually inject karo.
+        profile_photo_url / cover_photo_url -> URLField mein save hoga (Cloudinary/R2 URL).
+        years_of_experience alias 'experience_years' bhi accept karta hai (Flutter compat).
+        cases_handled -> User model pe save hota hai (AdvocateProfile mein nahi).
         """
-        # Mutable copy banao
-        data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
+        profile = self.get_object()
 
+        # Mutable dict banao — QueryDict se bhi kaam kare
+        data = request.data.dict() if hasattr(request.data, 'dict') else dict(request.data)
+
+        # URL aliases — Flutter in keys se bhejta hai
         if data.get('profile_photo_url'):
-            data['profile_photo'] = data['profile_photo_url']
+            data['profile_photo'] = data.pop('profile_photo_url')
 
         if data.get('cover_photo_url'):
-            data['cover_photo'] = data['cover_photo_url']
+            data['cover_photo'] = data.pop('cover_photo_url')
 
-        kwargs['partial'] = True
-        request._full_data = data
-        return super().update(request, *args, **kwargs)
+        # experience_years alias (Flutter edit screen se aata hai)
+        if 'experience_years' in data and 'years_of_experience' not in data:
+            data['years_of_experience'] = data.pop('experience_years')
+
+        # cases_handled — User model ka field hai, AdvocateProfile ka nahi
+        cases_handled = data.pop('cases_handled', None)
+        if cases_handled is not None:
+            try:
+                request.user.cases_handled = int(cases_handled)
+                request.user.save(update_fields=['cases_handled'])
+            except (ValueError, TypeError):
+                pass
+
+        serializer = self.get_serializer(profile, data=data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        return Response(serializer.data)
 
 
 class AdvocateOnboardingView(APIView):
