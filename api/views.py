@@ -2391,3 +2391,356 @@ class PostSearchView(generics.ListAPIView):
             'previous': None if page_num <= 1 else f"?q={query}&page={page_num - 1}",
             'results':  serializer.data,
         })
+
+def _is_admin(room, user):
+    """Check if user is admin of the room."""
+    from .models import ChatParticipant
+    return ChatParticipant.objects.filter(
+        room=room, user=user, role='admin'
+    ).exists()
+ 
+ 
+def _participant_data(cp):
+    """Serialize a ChatParticipant for the member list API."""
+    return {
+        "id": str(cp.user.id),
+        "full_name": cp.user.full_name,
+        "username": cp.user.username,
+        "avatar": cp.user.avatar.url if hasattr(cp.user, 'avatar') and cp.user.avatar else None,
+        "is_online": cp.user.is_online,
+        "role": cp.role,          # 'admin' | 'member'
+        "joined_at": cp.joined_at.isoformat(),
+        "is_muted": cp.is_muted,
+    }
+ 
+ 
+# ── Group Members List ────────────────────────────────────────────────────────
+ 
+class GroupMembersView(APIView):
+    """
+    GET  /api/chat/rooms/<room_id>/members/
+    List all members of a group room.
+    User must be a participant.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+ 
+    def get(self, request, room_id):
+        from .models import ChatRoom, ChatParticipant
+        room = get_object_or_404(
+            ChatRoom, id=room_id, room_type='group',
+            room_participants__user=request.user
+        )
+        participants = (
+            ChatParticipant.objects
+            .filter(room=room)
+            .select_related('user')
+            .order_by('role', 'joined_at')   # admins first
+        )
+        return Response({
+            "room_id": str(room.id),
+            "room_name": room.name,
+            "total": participants.count(),
+            "members": [_participant_data(cp) for cp in participants],
+            "is_admin": _is_admin(room, request.user),
+        })
+ 
+ 
+# ── Add Member ────────────────────────────────────────────────────────────────
+ 
+class GroupAddMemberView(APIView):
+    """
+    POST /api/chat/rooms/<room_id>/members/add/
+    Body: { "user_ids": ["uuid1", "uuid2"] }
+    Only group admins can add members.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+ 
+    def post(self, request, room_id):
+        from .models import ChatRoom, ChatParticipant
+        room = get_object_or_404(ChatRoom, id=room_id, room_type='group')
+ 
+        if not _is_admin(room, request.user):
+            return Response(
+                {"error": "Only group admins can add members."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+ 
+        user_ids = request.data.get('user_ids', [])
+        if not user_ids:
+            return Response(
+                {"error": "user_ids list is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+ 
+        added = []
+        already_in = []
+ 
+        for uid in user_ids:
+            try:
+                user = User.objects.get(id=uid, is_active=True)
+                cp, created = ChatParticipant.objects.get_or_create(
+                    room=room, user=user,
+                    defaults={'role': 'member'}
+                )
+                if created:
+                    added.append(user.full_name)
+                else:
+                    already_in.append(user.full_name)
+            except User.DoesNotExist:
+                continue
+ 
+        return Response({
+            "message": f"{len(added)} member(s) added.",
+            "added": added,
+            "already_in": already_in,
+        })
+ 
+ 
+# ── Remove Member ─────────────────────────────────────────────────────────────
+ 
+class GroupRemoveMemberView(APIView):
+    """
+    DELETE /api/chat/rooms/<room_id>/members/<user_id>/remove/
+    Admin can remove any member.
+    A member cannot remove themselves here — use leave/ instead.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+ 
+    def delete(self, request, room_id, user_id):
+        from .models import ChatRoom, ChatParticipant
+        room = get_object_or_404(ChatRoom, id=room_id, room_type='group')
+ 
+        if not _is_admin(room, request.user):
+            return Response(
+                {"error": "Only group admins can remove members."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+ 
+        if str(request.user.id) == str(user_id):
+            return Response(
+                {"error": "Admins cannot remove themselves. Use /leave/ instead."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+ 
+        target_cp = ChatParticipant.objects.filter(room=room, user_id=user_id).first()
+        if not target_cp:
+            return Response(
+                {"error": "User is not in this group."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+ 
+        # Cannot remove another admin unless you are the room creator
+        if target_cp.role == 'admin' and str(room.created_by_id) != str(request.user.id):
+            return Response(
+                {"error": "Only the group creator can remove other admins."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+ 
+        target_cp.delete()
+        return Response({"message": "Member removed from group."})
+ 
+ 
+# ── Leave Group ───────────────────────────────────────────────────────────────
+ 
+class LeaveGroupView(APIView):
+    """
+    POST /api/chat/rooms/<room_id>/leave/
+    Any participant can leave the group.
+    If the last admin leaves, the oldest member is promoted to admin.
+    If no members remain, the room is deleted.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+ 
+    def post(self, request, room_id):
+        from .models import ChatRoom, ChatParticipant
+        room = get_object_or_404(
+            ChatRoom, id=room_id, room_type='group',
+            room_participants__user=request.user
+        )
+ 
+        cp = get_object_or_404(ChatParticipant, room=room, user=request.user)
+        was_admin = cp.role == 'admin'
+        cp.delete()
+ 
+        remaining = ChatParticipant.objects.filter(room=room).order_by('joined_at')
+ 
+        if not remaining.exists():
+            room.delete()
+            return Response({"message": "You left the group. Group deleted (no members left)."})
+ 
+        # If the admin left and no other admin exists, promote oldest member
+        if was_admin:
+            admins_left = remaining.filter(role='admin').exists()
+            if not admins_left:
+                new_admin = remaining.first()
+                new_admin.role = 'admin'
+                new_admin.save(update_fields=['role'])
+ 
+        return Response({"message": "You have left the group."})
+ 
+ 
+# ── Update Group Info ─────────────────────────────────────────────────────────
+ 
+class GroupUpdateView(APIView):
+    """
+    PATCH /api/chat/rooms/<room_id>/update/
+    Body: { "name": "...", "description": "..." }
+    Only group admins can update group info.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+ 
+    def patch(self, request, room_id):
+        from .models import ChatRoom
+        room = get_object_or_404(ChatRoom, id=room_id, room_type='group')
+ 
+        if not _is_admin(room, request.user):
+            return Response(
+                {"error": "Only group admins can update group info."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+ 
+        name = request.data.get('name', '').strip()
+        description = request.data.get('description', '').strip()
+        group_icon = request.FILES.get('group_icon')
+ 
+        update_fields = []
+        if name:
+            room.name = name
+            update_fields.append('name')
+        if description is not None:
+            room.description = description
+            update_fields.append('description')
+        if group_icon:
+            room.group_icon = group_icon
+            update_fields.append('group_icon')
+ 
+        if update_fields:
+            room.save(update_fields=update_fields)
+ 
+        from .serializers import ChatRoomSerializer
+        return Response(
+            ChatRoomSerializer(room, context={'request': request}).data
+        )
+ 
+ 
+# ── Change Member Role (Promote/Demote) ───────────────────────────────────────
+ 
+class GroupMemberRoleView(APIView):
+    """
+    PATCH /api/chat/rooms/<room_id>/members/<user_id>/role/
+    Body: { "role": "admin" | "member" }
+    Only group creator can promote/demote.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+ 
+    def patch(self, request, room_id, user_id):
+        from .models import ChatRoom, ChatParticipant
+        room = get_object_or_404(ChatRoom, id=room_id, room_type='group')
+ 
+        # Only room creator can change roles
+        if str(room.created_by_id) != str(request.user.id):
+            return Response(
+                {"error": "Only the group creator can change member roles."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+ 
+        new_role = request.data.get('role', '').strip()
+        if new_role not in ('admin', 'member'):
+            return Response(
+                {"error": "role must be 'admin' or 'member'."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+ 
+        target = get_object_or_404(ChatParticipant, room=room, user_id=user_id)
+        target.role = new_role
+        target.save(update_fields=['role'])
+ 
+        return Response({
+            "message": f"Role updated to {new_role}.",
+            "user_id": str(user_id),
+            "role": new_role,
+        })
+ 
+ 
+# ── Invite Link ───────────────────────────────────────────────────────────────
+ 
+class GroupInviteLinkView(APIView):
+    """
+    GET  /api/chat/rooms/<room_id>/invite-link/
+         Admin gets or generates an invite link.
+    POST /api/chat/rooms/join/<invite_code>/
+         Anyone joins using the invite link.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+ 
+    def get(self, request, room_id):
+        from .models import ChatRoom
+        room = get_object_or_404(ChatRoom, id=room_id, room_type='group')
+ 
+        if not _is_admin(room, request.user):
+            return Response(
+                {"error": "Only admins can generate invite links."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+ 
+        # Reuse or generate invite_code — store in room.description as hack
+        # OR add invite_code field to ChatRoom in models.py (recommended).
+        # Below uses description hack-free approach — store code in a simple KV.
+        # For production: add `invite_code = models.CharField(...)` to ChatRoom.
+        # Here we derive a stable code from room id (simpler, no migration needed):
+        code = str(room.id).replace('-', '')[:16]
+ 
+        base_url = request.build_absolute_uri('/').rstrip('/')
+        link = f"{base_url}/api/chat/rooms/join/{code}/"
+        return Response({
+            "invite_code": code,
+            "invite_link": link,
+            "group_name": room.name,
+        })
+ 
+ 
+class JoinGroupViaInviteView(APIView):
+    """
+    POST /api/chat/rooms/join/<invite_code>/
+    Join a group using invite code.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+ 
+    def post(self, request, invite_code):
+        from .models import ChatRoom, ChatParticipant
+ 
+        # Match the first 16 chars of room UUID without dashes
+        rooms = ChatRoom.objects.filter(room_type='group')
+        room = None
+        for r in rooms:
+            code = str(r.id).replace('-', '')[:16]
+            if code == invite_code:
+                room = r
+                break
+ 
+        if not room:
+            return Response(
+                {"error": "Invalid invite link or group not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+ 
+        cp, created = ChatParticipant.objects.get_or_create(
+            room=room, user=request.user,
+            defaults={'role': 'member'}
+        )
+ 
+        if not created:
+            return Response({
+                "message": "You are already in this group.",
+                "room_id": str(room.id),
+                "already_member": True,
+            })
+ 
+        from .serializers import ChatRoomSerializer
+        return Response({
+            "message": f"You joined '{room.name}'!",
+            "room_id": str(room.id),
+            "already_member": False,
+            "room": ChatRoomSerializer(room, context={'request': request}).data,
+        }, status=status.HTTP_201_CREATED)

@@ -157,6 +157,22 @@ urlpatterns = [
     # REPORTS
     # ══════════════════════════════════════════════════════════════════════════
     path('reports/', views.ReportCreateView.as_view(), name='report'),
+    path('chat/rooms/<uuid:room_id>/members/',
+         views.GroupMembersView.as_view(), name='group-members'),
+    path('chat/rooms/<uuid:room_id>/members/add/',
+         views.GroupAddMemberView.as_view(), name='group-add-member'),
+    path('chat/rooms/<uuid:room_id>/members/<uuid:user_id>/remove/',
+         views.GroupRemoveMemberView.as_view(), name='group-remove-member'),
+    path('chat/rooms/<uuid:room_id>/members/<uuid:user_id>/role/',
+         views.GroupMemberRoleView.as_view(), name='group-member-role'),
+    path('chat/rooms/<uuid:room_id>/leave/',
+         views.LeaveGroupView.as_view(), name='leave-group'),
+    path('chat/rooms/<uuid:room_id>/update/',
+         views.GroupUpdateView.as_view(), name='update-group'),
+    path('chat/rooms/<uuid:room_id>/invite-link/',
+         views.GroupInviteLinkView.as_view(), name='group-invite-link'),
+    path('chat/rooms/join/<str:invite_code>/',
+         views.JoinGroupViaInviteView.as_view(), name='join-group-invite'),
 
     # ══════════════════════════════════════════════════════════════════════════
     # ADMIN
