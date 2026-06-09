@@ -4,6 +4,7 @@ UI Features aligned with LegalConnect screenshots.
 """
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
+from django.db.models import Q
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
@@ -206,11 +207,26 @@ class AdvocateProfileSerializer(serializers.ModelSerializer):
     is_connected = serializers.SerializerMethodField()
     is_following = serializers.SerializerMethodField()
     connection_status = serializers.SerializerMethodField()
-    # Real-time count — cached field pe rely mat karo
+    # Real-time counts — cached fields pe rely mat karo
     post_count = serializers.SerializerMethodField()
+    connection_count = serializers.SerializerMethodField()
 
     def get_post_count(self, obj):
         return Post.objects.filter(author=obj.user).count()
+
+    def get_connection_count(self, obj):
+        """
+        Direct DB se real count — cached field desync hone pe bhi sahi return karta hai.
+        Side effect: cached field bhi update karta hai taaki future reads fast hon.
+        """
+        real_count = Connection.objects.filter(
+            Q(sender=obj.user) | Q(receiver=obj.user),
+            status='accepted'
+        ).count()
+        # Sync cache if drifted
+        if obj.connection_count != real_count:
+            AdvocateProfile.objects.filter(pk=obj.pk).update(connection_count=real_count)
+        return real_count
 
     class Meta:
         model = AdvocateProfile

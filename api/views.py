@@ -366,12 +366,22 @@ class HomeDashboardView(APIView):
         user = request.user
         today = timezone.now().date()
 
-        # Stats
+        # Real-time connection count — cached field pe rely nahi karte.
+        # Race condition aur desync se bachne ke liye direct DB query.
+        connection_count = Connection.objects.filter(
+            Q(sender=user) | Q(receiver=user),
+            status='accepted'
+        ).count()
+
+        # Cached field bhi opportunistically sync rakhte hain
+        # taaki profile screen bhi consistent rahe.
         try:
             profile = user.advocate_profile
-            connection_count = profile.connection_count
+            if profile.connection_count != connection_count:
+                profile.connection_count = connection_count
+                profile.save(update_fields=['connection_count'])
         except AdvocateProfile.DoesNotExist:
-            connection_count = 0
+            pass
 
         todays_hearings = Hearing.objects.filter(
             advocate=user, hearing_date=today
@@ -770,22 +780,21 @@ class ConnectionDetailView(APIView):
         return Response(status=204)
 
     def _bump_connection_counts(self, conn):
+        # F() expression use karo — read-modify-write race condition se bachta hai
+        from django.db.models import F
         for user in [conn.sender, conn.receiver]:
-            try:
-                p = user.advocate_profile
-                p.connection_count += 1
-                p.save(update_fields=['connection_count'])
-            except AdvocateProfile.DoesNotExist:
-                pass
+            AdvocateProfile.objects.filter(user=user).update(
+                connection_count=F('connection_count') + 1
+            )
 
     def _decrement_connection_counts(self, conn):
+        from django.db.models import F
+        from django.db.models.functions import Greatest
         for user in [conn.sender, conn.receiver]:
-            try:
-                p = user.advocate_profile
-                p.connection_count = max(0, p.connection_count - 1)
-                p.save(update_fields=['connection_count'])
-            except AdvocateProfile.DoesNotExist:
-                pass
+            # Greatest(count-1, 0) ensures never goes negative
+            AdvocateProfile.objects.filter(user=user).update(
+                connection_count=Greatest(F('connection_count') - 1, 0)
+            )
 
 
 class FollowView(APIView):
