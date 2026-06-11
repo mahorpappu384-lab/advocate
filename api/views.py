@@ -62,6 +62,7 @@ from .utils import (
 )
 from .filters import AdvocateProfileFilter, PostFilter, ChannelFilter
 from project.permissions import IsOwnerOrReadOnly, IsMessageOwner
+from .msg91_utils import send_phone_otp, verify_phone_otp, resend_phone_otp
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -69,7 +70,267 @@ User = get_user_model()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HEALTH
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def _normalize_phone(phone: str) -> str:
+    """
+    Phone number normalize karo storage ke liye.
+    Returns: +919876543210 format
+    """
+    phone = phone.strip().replace(' ', '').replace('-', '')
+    if not phone.startswith('+'):
+        if phone.startswith('0'):
+            phone = '+91' + phone[1:]
+        elif len(phone) == 10:
+            phone = '+91' + phone
+        elif phone.startswith('91') and len(phone) == 12:
+            phone = '+' + phone
+    return phone
+
+
+def _make_login_response(user) -> dict:
+    """JWT tokens + user data response banao."""
+    refresh = RefreshToken.for_user(user)
+
+    onboarding_complete = False
+    try:
+        onboarding_complete = user.advocate_profile.onboarding_complete
+    except Exception:
+        pass
+
+    return {
+        'access': str(refresh.access_token),
+        'refresh': str(refresh),
+        'user': {
+            'id': str(user.id),
+            'username': user.username,
+            'email': user.email or '',
+            'full_name': user.full_name,
+            'phone': str(user.phone) if user.phone else '',
+            'is_verified': user.is_verified,
+            'is_advocate': user.is_advocate,
+            'advocate_status': getattr(user, 'advocate_status', 'none'),
+            'onboarding_complete': onboarding_complete,
+        }
+    }
+
+
 # ══════════════════════════════════════════════════════════════════════════════
+# VIEW 1: OTP Send (Login + Signup dono ke liye)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class SendPhoneOTPView(APIView):
+    """
+    POST /api/auth/send-phone-otp/
+    Body: {"phone": "9876543210"}
+
+    Response:
+        200: {"message": "OTP sent.", "is_new_user": true/false}
+        400: {"error": "..."}
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        phone = request.data.get('phone', '').strip()
+
+        if not phone:
+            return Response(
+                {'error': 'Phone number required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Minimum validation — 10 digit ya +91 format
+        clean = phone.replace('+', '').replace(' ', '').replace('-', '')
+        if not clean.isdigit() or len(clean) < 10:
+            return Response(
+                {'error': 'Invalid phone number.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # MSG91 OTP bhejo
+        result = send_phone_otp(phone)
+        if not result['success']:
+            return Response({'error': result['error']}, status=status.HTTP_400_BAD_REQUEST)
+
+        normalized = _normalize_phone(phone)
+        is_new_user = not User.objects.filter(phone=normalized).exists()
+
+        return Response({
+            'message': f'OTP sent to {phone}.',
+            'is_new_user': is_new_user,
+        }, status=status.HTTP_200_OK)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VIEW 2: Phone OTP se Login (existing user)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class VerifyPhoneOTPView(APIView):
+    """
+    POST /api/auth/verify-phone-otp/
+    Body: {"phone": "9876543210", "otp": "123456"}
+
+    Response (existing user):
+        200: {access, refresh, user: {...}}
+    Response (new user — abhi register nahi):
+        404: {"error": "No account found.", "is_new_user": true}
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        phone = request.data.get('phone', '').strip()
+        otp   = request.data.get('otp', '').strip()
+
+        if not phone or not otp:
+            return Response(
+                {'error': 'Phone and OTP both required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # MSG91 OTP verify karo
+        result = verify_phone_otp(phone, otp)
+        if not result['success']:
+            return Response({'error': result['error']}, status=status.HTTP_400_BAD_REQUEST)
+
+        normalized = _normalize_phone(phone)
+        try:
+            user = User.objects.get(phone=normalized)
+        except User.DoesNotExist:
+            return Response(
+                {
+                    'error': 'No account found with this number. Please sign up.',
+                    'is_new_user': True,
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Phone number verify mark karo
+        if not user.is_verified:
+            user.is_verified = True
+            user.save(update_fields=['is_verified'])
+
+        return Response(_make_login_response(user), status=status.HTTP_200_OK)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VIEW 3: Phone + OTP se Register (new user)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class RegisterWithPhoneView(APIView):
+    """
+    POST /api/auth/register-phone/
+    Body:
+        {
+            "phone": "9876543210",
+            "otp": "123456",
+            "full_name": "Arjun Sharma",
+            "username": "arjun_sharma_adv",
+            "email": "arjun@example.com",       ← optional
+            "password": "securepass123",
+            "password2": "securepass123"
+        }
+
+    Response:
+        201: {access, refresh, user, message}
+        400: {error}
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        phone     = request.data.get('phone', '').strip()
+        otp       = request.data.get('otp', '').strip()
+        full_name = request.data.get('full_name', '').strip()
+        username  = request.data.get('username', '').strip()
+        email     = request.data.get('email', '').strip()
+        password  = request.data.get('password', '')
+        password2 = request.data.get('password2', '')
+
+        # ── Validation ────────────────────────────────────────────────────
+        errors = {}
+        if not phone:
+            errors['phone'] = 'Phone number required.'
+        if not otp:
+            errors['otp'] = 'OTP required.'
+        if not full_name:
+            errors['full_name'] = 'Full name required.'
+        if not username:
+            errors['username'] = 'Username required.'
+        if not password or len(password) < 8:
+            errors['password'] = 'Password must be at least 8 characters.'
+        if password != password2:
+            errors['password2'] = 'Passwords do not match.'
+
+        if errors:
+            return Response({'error': errors}, status=status.HTTP_400_BAD_REQUEST)
+
+        # ── OTP Verify ────────────────────────────────────────────────────
+        result = verify_phone_otp(phone, otp)
+        if not result['success']:
+            return Response({'error': result['error']}, status=status.HTTP_400_BAD_REQUEST)
+
+        normalized = _normalize_phone(phone)
+
+        # Duplicate checks
+        if User.objects.filter(phone=normalized).exists():
+            return Response(
+                {'error': 'An account with this phone number already exists.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if User.objects.filter(username__iexact=username).exists():
+            return Response(
+                {'error': 'This username is already taken.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if email and User.objects.filter(email__iexact=email).exists():
+            return Response(
+                {'error': 'An account with this email already exists.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # ── User Create ───────────────────────────────────────────────────
+        user = User.objects.create_user(
+            username=username.lower(),
+            email=email or None,
+            full_name=full_name,
+            password=password,
+        )
+        user.phone = normalized
+        user.is_verified = True   # Phone OTP se verify ho gaya
+        user.save(update_fields=['phone', 'is_verified'])
+
+        return Response({
+            'message': 'Account created successfully!',
+            'onboarding_complete': False,
+            **_make_login_response(user),
+        }, status=status.HTTP_201_CREATED)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VIEW 4: OTP Resend
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ResendPhoneOTPView(APIView):
+    """
+    POST /api/auth/resend-phone-otp/
+    Body: {"phone": "9876543210"}
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        phone = request.data.get('phone', '').strip()
+
+        if not phone:
+            return Response(
+                {'error': 'Phone number required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        result = resend_phone_otp(phone)
+        if not result['success']:
+            return Response({'error': result['error']}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({'message': f'OTP resent to {phone}.'}, status=status.HTTP_200_OK)
 
 class HealthView(APIView):
     permission_classes = [permissions.AllowAny]

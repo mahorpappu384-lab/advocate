@@ -177,6 +177,11 @@ CORS_ALLOW_HEADERS = [
     'x-csrftoken', 'x-requested-with',
 ]
 
+MSG91_AUTH_KEY    = os.environ.get('MSG91_AUTH_KEY', '')   # .env mein set karo — hardcode mat karo
+MSG91_TEMPLATE_ID = os.environ.get('MSG91_TEMPLATE_ID', '1707177124945738736')
+MSG91_SENDER_ID   = os.environ.get('MSG91_SENDER_ID', 'EXVAKL')
+MSG91_COUNTRY_CODE = '91'
+
 R2_ENDPOINT_URL     = os.environ.get('R2_ENDPOINT_URL', 'https://00e27cbd0031bde85ffb3d8cd94297ea.r2.cloudflarestorage.com')
 R2_ACCESS_KEY_ID    = os.environ.get('R2_ACCESS_KEY_ID', '')
 R2_SECRET_ACCESS_KEY = os.environ.get('R2_SECRET_ACCESS_KEY', '')

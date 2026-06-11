@@ -45,6 +45,10 @@ urlpatterns = [
     path('auth/reset-password/',  views.ResetPasswordView.as_view(),  name='reset-password'),
     path('auth/change-password/', views.ChangePasswordView.as_view(), name='change-password'),
     path('auth/delete-account/',  views.DeleteAccountView.as_view(),  name='delete-account'),
+    path('auth/send-phone-otp/',    views.SendPhoneOTPView.as_view(),   name='send-phone-otp'),
+    path('auth/verify-phone-otp/',  views.VerifyPhoneOTPView.as_view(), name='verify-phone-otp'),
+    path('auth/register-phone/',    views.RegisterWithPhoneView.as_view(), name='register-phone'),
+    path('auth/resend-phone-otp/',  views.ResendPhoneOTPView.as_view(), name='resend-phone-otp'),
     path('health/', views.HealthView.as_view(), name='health'),
 
     # ══════════════════════════════════════════════════════════════════════════
