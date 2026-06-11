@@ -123,8 +123,8 @@ def verify_phone_otp(phone: str, otp: str) -> dict:
 
     # Basic client-side sanity check
     otp = str(otp).strip()
-    if not otp.isdigit() or len(otp) != 6:
-        return {'success': False, 'error': 'Invalid OTP format. Please enter the 6-digit code.'}
+    if not otp.isdigit() or len(otp) != 4:
+        return {'success': False, 'error': 'Invalid OTP format. Please enter the 4-digit code.'}
 
     params = {
         'authkey': auth_key,
