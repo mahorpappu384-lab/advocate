@@ -242,7 +242,7 @@ class RegisterWithPhoneView(APIView):
         otp       = request.data.get('otp', '').strip()
         full_name = request.data.get('full_name', '').strip()
         username  = request.data.get('username', '').strip()
-        email     = request.data.get('email', '').strip()
+        email     = (request.data.get('email') or '').strip()  # None-safe: Flutter null → empty string
         password  = request.data.get('password', '')
         password2 = request.data.get('password2', '')
 
