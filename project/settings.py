@@ -177,10 +177,20 @@ CORS_ALLOW_HEADERS = [
     'x-csrftoken', 'x-requested-with',
 ]
 
-MSG91_AUTH_KEY    = os.environ.get('MSG91_AUTH_KEY', '')   # .env mein set karo — hardcode mat karo
-MSG91_TEMPLATE_ID = os.environ.get('MSG91_TEMPLATE_ID', '1707177124945738736')
-MSG91_SENDER_ID   = os.environ.get('MSG91_SENDER_ID', 'EXVAKL')
-MSG91_COUNTRY_CODE = '91'
+
+# ── MSG91 SMS / OTP ───────────────────────────────────────────────────────────
+# Sabse zaroori: production server ke .env mein yeh set karo:
+#   MSG91_AUTH_KEY=<your_auth_key>
+#   MSG91_TEMPLATE_ID=<your_template_id>
+#   MSG91_SENDER_ID=EXVAKL        (optional — default EXVAKL)
+#
+# Fallback values sirf local development ke liye hain.
+# Agar env variable set hai toh woh override karega.
+MSG91_AUTH_KEY     = os.environ.get('MSG91_AUTH_KEY', '')                   # REQUIRED — production mein set karo
+MSG91_TEMPLATE_ID  = os.environ.get('MSG91_TEMPLATE_ID', '69970d63bed665779401eab5')  # REQUIRED
+MSG91_SENDER_ID    = os.environ.get('MSG91_SENDER_ID', 'EXVAKL')
+MSG91_COUNTRY_CODE = os.environ.get('MSG91_COUNTRY_CODE', '91')
+
 
 R2_ENDPOINT_URL     = os.environ.get('R2_ENDPOINT_URL', 'https://00e27cbd0031bde85ffb3d8cd94297ea.r2.cloudflarestorage.com')
 R2_ACCESS_KEY_ID    = os.environ.get('R2_ACCESS_KEY_ID', '')

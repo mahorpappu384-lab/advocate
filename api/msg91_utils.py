@@ -60,10 +60,17 @@ def send_phone_otp(phone: str) -> dict:
         {'success': False, 'error': '<user-facing message>'}
     """
     auth_key    = _auth_key()
-    template_id = getattr(settings, 'MSG91_TEMPLATE_ID', '')
+    template_id = getattr(settings, 'MSG91_TEMPLATE_ID', '').strip()
     sender_id   = getattr(settings, 'MSG91_SENDER_ID', 'EXVAKL')
 
     if not auth_key:
+        return {'success': False, 'error': 'SMS service is not configured. Please contact support.'}
+
+    if not template_id:
+        logger.critical(
+            "MSG91_TEMPLATE_ID settings/env mein set nahi hai! "
+            ".env mein MSG91_TEMPLATE_ID=<your_template_id> add karo."
+        )
         return {'success': False, 'error': 'SMS service is not configured. Please contact support.'}
 
     e164_phone = _get_e164(phone)
