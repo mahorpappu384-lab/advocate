@@ -239,7 +239,6 @@ class RegisterWithPhoneView(APIView):
 
     def post(self, request):
         phone     = request.data.get('phone', '').strip()
-        otp       = request.data.get('otp', '').strip()
         full_name = request.data.get('full_name', '').strip()
         username  = request.data.get('username', '').strip()
         email     = (request.data.get('email') or '').strip()  # None-safe: Flutter null → empty string
@@ -247,11 +246,12 @@ class RegisterWithPhoneView(APIView):
         password2 = request.data.get('password2', '')
 
         # ── Validation ────────────────────────────────────────────────────
+        # NOTE: OTP yahan dobara verify NAHI hota — signup flow mein Step 2 pe
+        # verifyPhoneOtpOnly() already verify kar chuka hai (MSG91 OTP one-time use hai).
+        # Dobara verify karne se "already verified" error aata hai.
         errors = {}
         if not phone:
             errors['phone'] = 'Phone number required.'
-        if not otp:
-            errors['otp'] = 'OTP required.'
         if not full_name:
             errors['full_name'] = 'Full name required.'
         if not username:
@@ -264,10 +264,8 @@ class RegisterWithPhoneView(APIView):
         if errors:
             return Response({'error': errors}, status=status.HTTP_400_BAD_REQUEST)
 
-        # ── OTP Verify ────────────────────────────────────────────────────
-        result = verify_phone_otp(phone, otp)
-        if not result['success']:
-            return Response({'error': result['error']}, status=status.HTTP_400_BAD_REQUEST)
+        # ── OTP already verified in Step 2 (verifyPhoneOtpOnly) ──────────
+        # No re-verification needed here. Phone is trusted.
 
         normalized = _normalize_phone(phone)
 
