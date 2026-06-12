@@ -3037,24 +3037,24 @@ class StoryPresignView(APIView):
         key = f"stories/{request.user.id}/{_uuid.uuid4()}.{ext}"
 
         try:
-            s3 = boto3.client(
+            r2 = boto3.client(
                 's3',
-                endpoint_url=settings.AWS_S3_ENDPOINT_URL,
-                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                endpoint_url=settings.R2_ENDPOINT_URL,
+                aws_access_key_id=settings.R2_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
                 config=BotoConfig(signature_version='s3v4'),
-                region_name=settings.AWS_S3_REGION_NAME,
+                region_name='auto',
             )
-            upload_url = s3.generate_presigned_url(
+            upload_url = r2.generate_presigned_url(
                 'put_object',
                 Params={
-                    'Bucket': settings.AWS_STORAGE_BUCKET_NAME,
+                    'Bucket': settings.R2_BUCKET_NAME,
                     'Key': key,
                     'ContentType': mime_type,
                 },
                 ExpiresIn=600,  # 10 min
             )
-            file_url = f"{settings.AWS_S3_CUSTOM_DOMAIN}/{key}"
+            file_url = f"{settings.R2_PUBLIC_URL.rstrip('/')}/{key}"
             return Response({'upload_url': upload_url, 'file_url': file_url})
         except Exception as e:
             logger.error(f"Story presign error: {e}")
