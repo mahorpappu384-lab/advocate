@@ -192,4 +192,12 @@ urlpatterns = [
     path('admin/analytics/',                          views.AdminAnalyticsView.as_view(),             name='admin-analytics'),
     path('admin/channels/',                           views.AdminChannelListView.as_view(),           name='admin-channels'),
     path('admin/legal-updates/',                      views.AdminLegalUpdateView.as_view(),           name='admin-legal-updates'),  # Create Recent Updates
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # STORIES
+    # ══════════════════════════════════════════════════════════════════════════
+    path('stories/presign/',              views.StoryPresignView.as_view(),    name='story-presign'),
+    path('stories/',                      views.StoryListCreateView.as_view(), name='stories'),
+    path('stories/<uuid:story_id>/seen/', views.StoryMarkSeenView.as_view(),   name='story-seen'),
+    path('stories/<uuid:story_id>/',      views.StoryDeleteView.as_view(),     name='story-delete'),
 ]

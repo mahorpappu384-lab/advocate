@@ -3012,3 +3012,178 @@ class JoinGroupViaInviteView(APIView):
             "already_member": False,
             "room": ChatRoomSerializer(room, context={'request': request}).data,
         }, status=status.HTTP_201_CREATED)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STORIES
+# ══════════════════════════════════════════════════════════════════════════════
+
+class StoryPresignView(APIView):
+    """
+    POST /api/stories/presign/
+    Body: { "file_name": "story.jpg", "mime_type": "image/jpeg" }
+    Response: { "upload_url": "...", "file_url": "..." }
+    R2 presigned URL for direct story media upload from Flutter.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        file_name = request.data.get('file_name', '').strip()
+        mime_type = request.data.get('mime_type', 'image/jpeg').strip()
+
+        if not file_name:
+            return Response({'error': 'file_name required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        ext = file_name.rsplit('.', 1)[-1].lower() if '.' in file_name else 'jpg'
+        key = f"stories/{request.user.id}/{_uuid.uuid4()}.{ext}"
+
+        try:
+            s3 = boto3.client(
+                's3',
+                endpoint_url=settings.AWS_S3_ENDPOINT_URL,
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                config=BotoConfig(signature_version='s3v4'),
+                region_name=settings.AWS_S3_REGION_NAME,
+            )
+            upload_url = s3.generate_presigned_url(
+                'put_object',
+                Params={
+                    'Bucket': settings.AWS_STORAGE_BUCKET_NAME,
+                    'Key': key,
+                    'ContentType': mime_type,
+                },
+                ExpiresIn=600,  # 10 min
+            )
+            file_url = f"{settings.AWS_S3_CUSTOM_DOMAIN}/{key}"
+            return Response({'upload_url': upload_url, 'file_url': file_url})
+        except Exception as e:
+            logger.error(f"Story presign error: {e}")
+            return Response({'error': 'Could not generate upload URL.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class StoryListCreateView(APIView):
+    """
+    GET  /api/stories/         — Apni + connections ki active stories
+    POST /api/stories/         — Nayi story create karo (after R2 upload)
+    Body: { "media_url": "...", "media_type": "image", "caption": "..." }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from .models import Story
+        # Apni stories + connections ki stories (active only)
+        now = timezone.now()
+        connected_ids = list(
+            Connection.objects.filter(
+                Q(sender=request.user) | Q(receiver=request.user),
+                status='accepted'
+            ).values_list(
+                'receiver_id', flat=True
+            )
+        ) + list(
+            Connection.objects.filter(
+                Q(sender=request.user) | Q(receiver=request.user),
+                status='accepted'
+            ).values_list(
+                'sender_id', flat=True
+            )
+        )
+        # Apna ID bhi include karo
+        all_ids = list(set(connected_ids + [request.user.id]))
+
+        stories = (
+            Story.objects
+            .filter(author_id__in=all_ids, expires_at__gt=now)
+            .select_related('author')
+            .prefetch_related('seen_by')
+            .order_by('-created_at')
+        )
+
+        # Group by author
+        from collections import defaultdict
+        grouped = defaultdict(list)
+        for s in stories:
+            grouped[s.author_id].append(s)
+
+        result = []
+        for author_id, author_stories in grouped.items():
+            first = author_stories[0]
+            author = first.author
+            has_unseen = any(request.user not in s.seen_by.all() for s in author_stories)
+            result.append({
+                'author_id':    str(author.id),
+                'author_name':  author.full_name,
+                'author_photo': getattr(author, 'advocate_profile', None) and
+                                author.advocate_profile.profile_photo or None,
+                'is_own':       author.id == request.user.id,
+                'has_unseen':   has_unseen,
+                'stories': [
+                    {
+                        'id':         str(s.id),
+                        'media_url':  s.media_url,
+                        'media_type': s.media_type,
+                        'caption':    s.caption,
+                        'seen':       request.user in s.seen_by.all(),
+                        'seen_count': s.seen_by.count(),
+                        'created_at': s.created_at.isoformat(),
+                        'expires_at': s.expires_at.isoformat(),
+                    }
+                    for s in author_stories
+                ],
+            })
+
+        return Response(result)
+
+    def post(self, request):
+        from .models import Story
+        media_url  = request.data.get('media_url', '').strip()
+        media_type = request.data.get('media_type', 'image').strip()
+        caption    = request.data.get('caption', '').strip()
+
+        if not media_url:
+            return Response({'error': 'media_url required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if media_type not in ('image', 'video'):
+            return Response({'error': 'media_type must be image or video.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        story = Story.objects.create(
+            author=request.user,
+            media_url=media_url,
+            media_type=media_type,
+            caption=caption,
+        )
+        return Response({
+            'id':         str(story.id),
+            'media_url':  story.media_url,
+            'media_type': story.media_type,
+            'caption':    story.caption,
+            'expires_at': story.expires_at.isoformat(),
+            'created_at': story.created_at.isoformat(),
+        }, status=status.HTTP_201_CREATED)
+
+
+class StoryMarkSeenView(APIView):
+    """
+    POST /api/stories/<story_id>/seen/
+    Story ko seen mark karo.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, story_id):
+        from .models import Story
+        story = get_object_or_404(Story, id=story_id, expires_at__gt=timezone.now())
+        story.seen_by.add(request.user)
+        return Response({'message': 'Marked as seen.'})
+
+
+class StoryDeleteView(APIView):
+    """
+    DELETE /api/stories/<story_id>/
+    Apni story delete karo.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, story_id):
+        from .models import Story
+        story = get_object_or_404(Story, id=story_id, author=request.user)
+        story.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

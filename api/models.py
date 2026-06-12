@@ -96,7 +96,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     objects = UserManager()
 
     USERNAME_FIELD = 'username'
-    REQUIRED_FIELDS = ['email', 'full_name']
+    REQUIRED_FIELDS = ['full_name']
 
     class Meta:
         db_table = 'users'
@@ -922,3 +922,50 @@ class Report(models.Model):
 
     def __str__(self):
         return f"Report[{self.report_type}] by {self.reporter.email} – {self.status}"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STORIES
+# Instagram-style 24-hour stories — Profile avatar pe ring dikhaata hai
+# Chat screen pe online users row mein bhi story ring dikhega
+# Channel screen sidebar mein bhi story ring dikhega
+# ══════════════════════════════════════════════════════════════════════════════
+
+class Story(models.Model):
+    """
+    24-hour expiring stories.
+    Flow:
+      1. Flutter → /api/stories/presign/  → R2 presigned URL milta hai
+      2. Flutter bytes directly R2 pe PUT karta hai
+      3. Flutter → /api/stories/ POST { media_url, media_type, caption }
+      4. Story 24 ghante baad expire ho jaati hai (seen_by, expires_at)
+    """
+    MEDIA_TYPES = [
+        ('image', 'Image'),
+        ('video', 'Video'),
+    ]
+
+    id         = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    author     = models.ForeignKey(User, on_delete=models.CASCADE, related_name='stories')
+    media_url  = models.URLField(max_length=1000)          # R2 public URL
+    media_type = models.CharField(max_length=10, choices=MEDIA_TYPES, default='image')
+    caption    = models.CharField(max_length=300, blank=True)
+    seen_by    = models.ManyToManyField(User, blank=True, related_name='seen_stories')
+    expires_at = models.DateTimeField()                    # created_at + 24h
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'stories'
+        ordering  = ['-created_at']
+
+    def save(self, *args, **kwargs):
+        if not self.expires_at:
+            from datetime import timedelta
+            self.expires_at = timezone.now() + timedelta(hours=24)
+        super().save(*args, **kwargs)
+
+    @property
+    def is_active(self):
+        return timezone.now() < self.expires_at
+
+    def __str__(self):
+        return f"Story by {self.author.full_name} ({self.media_type})"
