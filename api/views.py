@@ -1168,19 +1168,18 @@ class SuggestedAdvocatesView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        # Sabhi connected users ke IDs nikalo (dono directions mein)
-        connected = Connection.objects.filter(
-            Q(sender=self.request.user) | Q(receiver=self.request.user)
+        # ✅ Sirf ACCEPTED connections exclude karo — pending wale tab bhi dikhne chahiye
+        # Taaki user pending status dekh sake network screen mein
+        accepted_connections = Connection.objects.filter(
+            Q(sender=self.request.user) | Q(receiver=self.request.user),
+            status='accepted'
         ).values_list('sender_id', 'receiver_id')
         excluded = set()
-        for s, r in connected:
+        for s, r in accepted_connections:
             excluded.add(s)
             excluded.add(r)
-        excluded.add(self.request.user.id)
+        excluded.add(self.request.user.id)  # Apne aap ko exclude karo
 
-        # ✅ FIX: advocate_status='approved' filter hata diya
-        # Sabhi active users dikhenge jinka AdvocateProfile exist karta hai
-        # (registered users with any status: none/pending/approved)
         return AdvocateProfile.objects.filter(
             user__is_active=True,
         ).exclude(user__id__in=excluded).order_by('?')[:50]
