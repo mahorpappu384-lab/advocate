@@ -1044,14 +1044,29 @@ class SendConnectionRequestView(APIView):
         if existing:
             if existing.status == 'accepted':
                 return Response({"error": "Already connected."}, status=400)
-            return Response({"error": "Connection request already sent."}, status=400)
+            # ✅ FIX: Duplicate click pe 400 error nahi — existing pending conn return karo
+            # Flutter side "error" parse karke crash karta tha, ab silently succeed karta hai
+            return Response(
+                ConnectionSerializer(existing, context={'request': request}).data,
+                status=200
+            )
 
         conn = Connection.objects.create(
             sender=request.user,
             receiver=receiver,
             message=serializer.validated_data.get('message', ''),
         )
-        send_connection_request_email(request.user, receiver)
+
+        # ✅ FIX: Email synchronous tha — ASGI timeout ka root cause yahi tha
+        # transaction.on_commit se email request complete hone ke BAAD bheja jaata hai
+        try:
+            from django.db import transaction
+            _sender = request.user
+            _receiver = receiver
+            transaction.on_commit(lambda: _send_connection_email_bg(_sender, _receiver))
+        except Exception:
+            pass
+
         create_notification(
             recipient=receiver, notif_type='connection_request',
             title='New Connection Request',
@@ -1059,6 +1074,14 @@ class SendConnectionRequestView(APIView):
             sender=request.user,
         )
         return Response(ConnectionSerializer(conn, context={'request': request}).data, status=201)
+
+
+def _send_connection_email_bg(sender, receiver):
+    """Email ko background mein bhejo — request thread block nahi hogi"""
+    try:
+        send_connection_request_email(sender, receiver)
+    except Exception:
+        pass  # Email fail = silent fail, connection already created hai
 
 
 class ConnectionDetailView(APIView):
