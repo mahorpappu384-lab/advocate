@@ -192,6 +192,7 @@ urlpatterns = [
     path('admin/analytics/',                          views.AdminAnalyticsView.as_view(),             name='admin-analytics'),
     path('admin/channels/',                           views.AdminChannelListView.as_view(),           name='admin-channels'),
     path('admin/legal-updates/',                      views.AdminLegalUpdateView.as_view(),           name='admin-legal-updates'),  # Create Recent Updates
+    path('admin/fix-profiles/',                       views.FixMissingAdvocateProfilesView.as_view(), name='admin-fix-profiles'),   # One-time fix: existing users
 
     # ══════════════════════════════════════════════════════════════════════════
     # STORIES

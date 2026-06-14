@@ -297,6 +297,9 @@ class RegisterWithPhoneView(APIView):
         user.is_verified = True   # Phone OTP se verify ho gaya
         user.save(update_fields=['phone', 'is_verified'])
 
+        # ✅ FIX: AdvocateProfile auto-create karo — bina iske user network mein nahi dikhega
+        AdvocateProfile.objects.get_or_create(user=user)
+
         return Response({
             'message': 'Account created successfully!',
             'onboarding_complete': False,
@@ -364,6 +367,10 @@ class RegisterView(generics.CreateAPIView):
         user = serializer.save()
         user.is_verified = True
         user.save(update_fields=['is_verified'])
+
+        # ✅ FIX: Har naye user ka AdvocateProfile auto-create karo
+        # Bina iske user suggested/search mein nahi dikhega
+        AdvocateProfile.objects.get_or_create(user=user)
 
         # JWT tokens generate karo taaki Flutter seedha auto-login kar sake
         # OTP step hataya gaya — registration ke baad direct login
@@ -711,17 +718,65 @@ class AdvocateProfileListView(generics.ListAPIView):
     serializer_class = AdvocateProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
     filterset_class = AdvocateProfileFilter
-    search_fields = ['user__full_name', 'bio', 'city', 'state']
+    search_fields = ['user__full_name', 'user__username', 'bio', 'city', 'state',
+                     'specializations', 'state_bar_council']
     ordering_fields = ['years_of_experience', 'connection_count', 'follower_count']
     ordering = ['-connection_count']
 
     def get_queryset(self):
-        # advocate_status='approved' filter hataya — naye registered users bhi
-        # search mein dikhne chahiye, sirf active aur public profiles
-        return AdvocateProfile.objects.filter(
+        qs = AdvocateProfile.objects.filter(
             user__is_active=True,
-            is_public=True,
         ).select_related('user').prefetch_related('education', 'experience', 'achievements')
+
+        # ✅ FIX: Flutter ?name= query param bhi handle karo (not just DRF ?search=)
+        name = self.request.query_params.get('name', '').strip()
+        if name:
+            qs = qs.filter(
+                Q(user__full_name__icontains=name) |
+                Q(user__username__icontains=name) |
+                Q(city__icontains=name) |
+                Q(state__icontains=name)
+            )
+
+        # Other filters from Flutter
+        city = self.request.query_params.get('city', '').strip()
+        if city:
+            qs = qs.filter(city__icontains=city)
+
+        state = self.request.query_params.get('state', '').strip()
+        if state:
+            qs = qs.filter(state__icontains=state)
+
+        practice_area = self.request.query_params.get('practice_area', '').strip()
+        if practice_area:
+            qs = qs.filter(specializations__icontains=practice_area)
+
+        court = self.request.query_params.get('court', '').strip()
+        if court:
+            qs = qs.filter(
+                Q(primary_court__icontains=court) |
+                Q(courts_practiced__icontains=court)
+            )
+
+        language = self.request.query_params.get('language', '').strip()
+        if language:
+            qs = qs.filter(languages_known__icontains=language)
+
+        min_exp = self.request.query_params.get('min_exp')
+        if min_exp:
+            try:
+                qs = qs.filter(years_of_experience__gte=int(min_exp))
+            except ValueError:
+                pass
+
+        max_exp = self.request.query_params.get('max_exp')
+        if max_exp:
+            try:
+                qs = qs.filter(years_of_experience__lte=int(max_exp))
+            except ValueError:
+                pass
+
+        return qs
 
 
 class MyAdvocateProfileView(generics.RetrieveUpdateAPIView):
@@ -1113,17 +1168,22 @@ class SuggestedAdvocatesView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        # Sabhi connected users ke IDs nikalo (dono directions mein)
         connected = Connection.objects.filter(
             Q(sender=self.request.user) | Q(receiver=self.request.user)
         ).values_list('sender_id', 'receiver_id')
         excluded = set()
         for s, r in connected:
-            excluded.add(s); excluded.add(r)
+            excluded.add(s)
+            excluded.add(r)
         excluded.add(self.request.user.id)
 
+        # ✅ FIX: advocate_status='approved' filter hata diya
+        # Sabhi active users dikhenge jinka AdvocateProfile exist karta hai
+        # (registered users with any status: none/pending/approved)
         return AdvocateProfile.objects.filter(
-            user__is_active=True, user__advocate_status='approved',
-        ).exclude(user__id__in=excluded).order_by('?')[:20]
+            user__is_active=True,
+        ).exclude(user__id__in=excluded).order_by('?')[:50]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3187,3 +3247,36 @@ class StoryDeleteView(APIView):
         story = get_object_or_404(Story, id=story_id, author=request.user)
         story.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ONE-TIME FIX: Existing Users ke liye AdvocateProfile create karo
+# GET /api/admin/fix-profiles/
+# ══════════════════════════════════════════════════════════════════════════════
+
+class FixMissingAdvocateProfilesView(APIView):
+    """
+    GET /api/admin/fix-profiles/
+    Sab active users jinka AdvocateProfile nahi bana, unka profile create karo.
+    Yeh one-time fix hai existing 36 users ke liye.
+    Only staff/superuser call kar sakta hai.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        users_without_profile = User.objects.filter(
+            is_active=True
+        ).exclude(
+            id__in=AdvocateProfile.objects.values_list('user_id', flat=True)
+        )
+        created_count = 0
+        created_for = []
+        for user in users_without_profile:
+            AdvocateProfile.objects.create(user=user)
+            created_count += 1
+            created_for.append(user.username)
+
+        return Response({
+            'message': f'{created_count} profiles created.',
+            'created_for': created_for,
+        })
