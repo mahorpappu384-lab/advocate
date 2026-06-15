@@ -3170,8 +3170,23 @@ class StoryListCreateView(APIView):
                 'sender_id', flat=True
             )
         )
+
+        # Chat participants bhi include karo —
+        # Jo log sirf chat room mein hain (connection nahi hai) unki stories bhi dikhao
+        chat_room_ids = ChatParticipant.objects.filter(
+            user=request.user
+        ).values_list('room_id', flat=True)
+
+        chat_participant_ids = list(
+            ChatParticipant.objects.filter(
+                room_id__in=chat_room_ids
+            ).exclude(
+                user=request.user
+            ).values_list('user_id', flat=True)
+        )
+
         # Apna ID bhi include karo
-        all_ids = list(set(connected_ids + [request.user.id]))
+        all_ids = list(set(connected_ids + chat_participant_ids + [request.user.id]))
 
         stories = (
             Story.objects
