@@ -177,7 +177,49 @@ CORS_ALLOW_HEADERS = [
     'x-csrftoken', 'x-requested-with',
 ]
 
+# ── Yeh block settings.py mein add karo ──────────────────────────────────────
+# Render pe logs dikhane ke liye zaroori hai
 
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        # Tumhara consumers.py ka logger
+        'api.consumers': {      # ← apna app name daalo (e.g. 'chat.consumers')
+            'handlers': ['console'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        # Django channels logs
+        'django.channels': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        # Daphne server logs
+        'daphne': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
 # ── MSG91 SMS / OTP ───────────────────────────────────────────────────────────
 # Sabse zaroori: production server ke .env mein yeh set karo:
 #   MSG91_AUTH_KEY=<your_auth_key>
