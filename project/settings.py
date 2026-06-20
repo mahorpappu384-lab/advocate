@@ -102,6 +102,15 @@ CACHES = {
         'LOCATION': REDIS_URL,
         'OPTIONS': {
             'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+            # ✅ FIX: Same stale connection issue — Render network idle connections
+            # drop kar deta hai. health_check_interval se pool apne aap stale
+            # connections detect karke replace karta hai.
+            'SOCKET_CONNECT_TIMEOUT': 5,
+            'SOCKET_TIMEOUT': 5,
+            'RETRY_ON_TIMEOUT': True,
+            'CONNECTION_POOL_KWARGS': {
+                'health_check_interval': 15,
+            },
         }
     }
 }
@@ -111,6 +120,20 @@ CHANNEL_LAYERS = {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
             "hosts": [REDIS_URL],
+            # ✅ FIX: Render ke internal network pe idle TCP connections ~30-60s
+            # mein silently drop ho jaati hain bina pool ko notify kiye.
+            # Jab pehli baar koi command (group_add ka zadd) bheja jaata tha,
+            # pool purana dead socket use karta tha → "Connection lost" crash.
+            #
+            # health_check_interval: har 15s pe Redis ko ping karo — pool ko
+            # pata chalta hai kaun sa connection alive hai, stale connections
+            # refresh hoti hain PEHLE se, command bhejne se pehle
+            "health_check_interval": 15,
+            "socket_connect_timeout": 5,
+            "socket_timeout": 5,
+            "retry_on_timeout": True,
+            "capacity": 100,
+            "expiry": 86400,
         },
     },
 }

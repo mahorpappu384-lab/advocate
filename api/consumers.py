@@ -17,17 +17,38 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self.user = None
         self.room_id = self.scope['url_route']['kwargs'].get('room_id')
         self.room_group = f"chat_{self.room_id}"
+        self._accepted = False
 
         logger.info(f"[CONNECT:1] room={self.room_id} | channel={self.channel_name}")
 
+        # ── ✅ FIX: accept() SABSE PEHLE — koi DB/auth check se pehle ─────
+        # Pehle yahan auth + 2 DB queries (room_exists, check_participant) ke
+        # baad accept() hota tha — ye sab milke kabhi kabhi 2-4s+ le lete the.
+        # Render starter plan (1 worker, slow/cold Postgres) pe proxy ka
+        # WS-upgrade timeout isse pehle hi cross ho jaata tha, aur browser ko
+        # "Unexpected response code: 500" milta tha — fir Flutter turant
+        # disconnect karke retry karta, jabki server abhi DB query mein hi
+        # busy hota tha. Isi wajah se kabhi consumer ka koi log bhi nahi dikhta.
+        #
+        # Ab handshake ko jitna jaldi ho sake complete karo (accept()), aur
+        # auth/room/participant validation baad mein karo. Agar validation
+        # fail ho, tab bhi close() kar dete hain — bas connection establish
+        # hone ke baad, proxy timeout window se bahar.
+        try:
+            await self.accept()
+            self._accepted = True
+            logger.info(f"[CONNECT:2] ✅ WS accepted (pre-auth) | room={self.room_id}")
+        except Exception as e:
+            logger.error(f"[CONNECT:FAIL] accept() crashed | {e}\n{traceback.format_exc()}")
+            return
+
         try:
             # ── Step 1: Auth ──────────────────────────────────────────────
-            # Token validation + room/participant check — PARALLEL jahan possible ho
             scope_user = self.scope.get("user")
 
-            if scope_user and scope_user.is_authenticated:
+            if scope_user and getattr(scope_user, "is_authenticated", False):
                 self.user = scope_user
-                logger.info(f"[CONNECT:2a] Auth via scope_user | user_id={self.user.id}")
+                logger.info(f"[CONNECT:3a] Auth via scope_user | user_id={self.user.id}")
             else:
                 token = self.get_token_from_query()
                 if not token:
@@ -37,52 +58,67 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 self.user = await self.get_user_from_token(token)
 
             if not self.user or not self.user.is_authenticated:
-                logger.warning(f"[CONNECT:FAIL] Auth failed — closing 4001")
+                logger.warning("[CONNECT:FAIL] Auth failed — closing 4001")
                 await self.close(code=4001)
                 return
 
-            logger.info(f"[CONNECT:3] Auth OK | user_id={self.user.id} | username={self.user.username}")
+            logger.info(f"[CONNECT:4] Auth OK | user_id={self.user.id} | username={self.user.username}")
 
-            # ── Step 2: DB checks — PARALLEL (room_exists + check_participant ek saath) ──
-            # Pehle sequential tha: ~1.5s + ~2s = ~3.5s
-            # Ab parallel: max(1.5s, 2s) = ~2s  →  ~1.5s bachat
+            # ── Step 2: room_exists + is_participant — EK QUERY mein combine ──
+            # Pehle 2 alag DB calls parallel chalti thi. Ab ek hi query se
+            # dono confirm ho jaate hain — round trips kam.
             try:
-                room_exists, is_participant = await asyncio.gather(
-                    self.room_exists(),
-                    self.check_participant(),
-                )
-                logger.info(f"[CONNECT:4] room_exists={room_exists} | is_participant={is_participant}")
+                is_participant = await self.check_participant()
+                logger.info(f"[CONNECT:5] is_participant={is_participant}")
             except Exception as e:
-                logger.error(f"[CONNECT:FAIL] DB checks crashed | {e}\n{traceback.format_exc()}")
+                logger.error(f"[CONNECT:FAIL] DB check crashed | {e}\n{traceback.format_exc()}")
                 await self.close(code=4500)
-                return
-
-            if not room_exists:
-                logger.warning(f"[CONNECT:FAIL] Room not found — closing 4004")
-                await self.close(code=4004)
                 return
 
             if not is_participant:
-                logger.warning(f"[CONNECT:FAIL] Not a participant — closing 4003")
+                # Room missing ya user participant nahi — dono cases yahan aate hain.
+                # (room_exists() ko separately call karke 4004 vs 4003 differentiate
+                # kar sakte ho agar frontend ko alag handling chahiye.)
+                logger.warning("[CONNECT:FAIL] Room missing or not a participant — closing 4003")
                 await self.close(code=4003)
                 return
 
-            # ── Step 3: group_add ─────────────────────────────────────────
-            try:
-                await self.channel_layer.group_add(self.room_group, self.channel_name)
-                logger.info(f"[CONNECT:5] group_add OK | group={self.room_group}")
-            except Exception as e:
-                logger.error(f"[CONNECT:FAIL] group_add crashed — Redis? | {e}\n{traceback.format_exc()}")
+            # ── Step 3: group_add — retry with backoff ────────────────────
+            # ✅ FIX: Render pe Redis ka idle TCP connection silently drop ho
+            # jaata hai (network timeout ~30-60s). Pehli baar group_add pe
+            # "Connection lost" aata tha — ye stale pooled connection ki
+            # wajah se tha, actual Redis service down nahi tha.
+            # settings.py mein health_check_interval=15 se ye problem mostly
+            # solve ho gayi hai, lekin ek retry yahan double safety net hai —
+            # pehli baar "Connection lost" aaye toh redis pool nayi connection
+            # banata hai, doosri baar pe kaam ho jaata hai.
+            group_add_ok = False
+            for attempt in range(1, 3):  # max 2 tries
+                try:
+                    await self.channel_layer.group_add(self.room_group, self.channel_name)
+                    logger.info(f"[CONNECT:6] group_add OK (attempt {attempt}) | group={self.room_group}")
+                    group_add_ok = True
+                    break
+                except Exception as e:
+                    err_str = str(e)
+                    logger.warning(
+                        f"[CONNECT:group_add] attempt {attempt} failed | {err_str}"
+                    )
+                    if attempt < 2:
+                        # 500ms ruko — pool nayi connection banaye
+                        await asyncio.sleep(0.5)
+                    else:
+                        logger.error(
+                            f"[CONNECT:FAIL] group_add failed after 2 attempts — Redis down?\n{traceback.format_exc()}"
+                        )
+
+            if not group_add_ok:
                 await self.close(code=4500)
                 return
 
-            # ── Step 4: accept() — JALD SE JALD ──────────────────────────
-            # set_online + broadcast accept ke BAAD background mein karo
-            # Isse client ka handshake complete hota hai aur 1006 nahi aata
-            await self.accept()
-            logger.info(f"[CONNECT:DONE] ✅ WS accepted | user={self.user.id} | room={self.room_id}")
+            logger.info(f"[CONNECT:DONE] ✅ Fully validated | user={self.user.id} | room={self.room_id}")
 
-            # ── Step 5: Post-connect background tasks (non-blocking) ──────
+            # ── Step 4: Post-connect background tasks (non-blocking) ──────
             asyncio.ensure_future(self._post_connect())
 
         except Exception as e:
