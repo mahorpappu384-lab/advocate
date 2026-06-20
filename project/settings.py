@@ -119,19 +119,18 @@ CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [REDIS_URL],
-            # ✅ FIX: Render ke internal network pe idle TCP connections ~30-60s
-            # mein silently drop ho jaati hain bina pool ko notify kiye.
-            # Jab pehli baar koi command (group_add ka zadd) bheja jaata tha,
-            # pool purana dead socket use karta tha → "Connection lost" crash.
-            #
-            # health_check_interval: har 15s pe Redis ko ping karo — pool ko
-            # pata chalta hai kaun sa connection alive hai, stale connections
-            # refresh hoti hain PEHLE se, command bhejne se pehle
-            "health_check_interval": 15,
-            "socket_connect_timeout": 5,
-            "socket_timeout": 5,
-            "retry_on_timeout": True,
+            # ✅ FIX: health_check_interval aur socket options RedisChannelLayer
+            # ke top-level CONFIG mein nahi jaate — ye alag-alag kwargs hain jo
+            # "hosts" ke andar dict format mein pass karne padte hain.
+            # Galat: "hosts": [REDIS_URL], "health_check_interval": 15  ← crash
+            # Sahi: "hosts": [{"address": REDIS_URL, "health_check_interval": 15}]
+            "hosts": [{
+                "address": REDIS_URL,
+                "health_check_interval": 15,   # har 15s pe pool stale connections refresh karta hai
+                "socket_connect_timeout": 5,
+                "socket_timeout": 5,
+                "retry_on_timeout": True,
+            }],
             "capacity": 100,
             "expiry": 86400,
         },
