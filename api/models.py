@@ -89,6 +89,15 @@ class User(AbstractBaseUser, PermissionsMixin):
     privacy_last_seen = models.BooleanField(default=True)        # Show last seen
     privacy_online_status = models.BooleanField(default=True)    # Show online status
 
+    # ── Who Can — granular access controls ───────────────────────────────────
+    WHO_CAN_CHOICES = [
+        ('everyone',    'Everyone'),
+        ('connections', 'Connections Only'),
+        ('nobody',      'Nobody'),
+    ]
+    who_can_message     = models.CharField(max_length=20, choices=WHO_CAN_CHOICES, default='connections')
+    who_can_see_profile = models.CharField(max_length=20, choices=WHO_CAN_CHOICES, default='everyone')
+
     # ── Home screen: Advocate Rating (from profile stats) ────────────────────
     advocate_rating = models.DecimalField(max_digits=3, decimal_places=1, default=0.0)
     cases_handled = models.PositiveIntegerField(default=0)       # Home stats card

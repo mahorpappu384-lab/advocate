@@ -54,10 +54,12 @@ urlpatterns = [
     # ══════════════════════════════════════════════════════════════════════════
     # USERS
     # ══════════════════════════════════════════════════════════════════════════
-    path('users/me/',                  views.MyProfileView.as_view(),       name='my-profile'),
-    path('users/me/presence/',         views.UserPresenceView.as_view(),     name='user-presence'),       # Profile: Online/Away/Offline
-    path('users/me/preferences/',      views.UserPreferencesView.as_view(),  name='user-preferences'),    # Profile: theme, notifs, privacy
-    path('users/<uuid:pk>/',           views.UserDetailView.as_view(),       name='user-detail'),
+    path('users/me/',                  views.MyProfileView.as_view(),           name='my-profile'),
+    path('users/me/presence/',         views.UserPresenceView.as_view(),         name='user-presence'),       # Profile: Online/Away/Offline
+    path('users/me/preferences/',      views.UserPreferencesView.as_view(),      name='user-preferences'),    # Profile: theme, notifs, privacy, who_can_*
+    path('users/blocked/',             views.BlockedUsersListView.as_view(),     name='blocked-users'),       # Settings > Privacy > Blocked Users
+    path('users/<uuid:pk>/block/',     views.BlockUserView.as_view(),            name='block-user'),          # POST=block, DELETE=unblock
+    path('users/<uuid:pk>/',           views.UserDetailView.as_view(),           name='user-detail'),
 
     # ══════════════════════════════════════════════════════════════════════════
     # HOME SCREEN

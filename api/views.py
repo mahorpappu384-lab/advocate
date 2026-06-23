@@ -43,7 +43,7 @@ from .models import (
 from .serializers import (
     RegisterSerializer, LoginSerializer, OTPVerifySerializer,
     ForgotPasswordSerializer, ResetPasswordSerializer, ChangePasswordSerializer,
-    UserProfileSerializer, AdminUserSerializer, AdminAdvocateVerifySerializer,
+    UserProfileSerializer, UserMiniSerializer, AdminUserSerializer, AdminAdvocateVerifySerializer,
     AdvocateProfileSerializer, AdvocateVerificationSerializer,
     AdvocateEducationSerializer, AdvocateExperienceSerializer, AdvocateAchievementSerializer,
     ConnectionSerializer, ConnectionRequestSerializer, FollowSerializer,
@@ -554,10 +554,24 @@ class MyProfileView(generics.RetrieveUpdateAPIView):
 
 
 class UserDetailView(generics.RetrieveAPIView):
-    """GET /api/users/<id>/"""
+    """
+    GET /api/users/<id>/
+    Blocked user ka profile return nahi karta — 404 deta hai.
+    """
     serializer_class = UserProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
     queryset = User.objects.filter(is_active=True)
+
+    def retrieve(self, request, *args, **kwargs):
+        from rest_framework.exceptions import NotFound
+        instance = self.get_object()
+        is_blocked = Connection.objects.filter(
+            Q(sender=request.user, receiver=instance, status='blocked') |
+            Q(sender=instance, receiver=request.user, status='blocked')
+        ).exists()
+        if is_blocked:
+            raise NotFound("User not found.")
+        return super().retrieve(request, *args, **kwargs)
 
 
 class UserPresenceView(APIView):
@@ -596,21 +610,140 @@ class UserPreferencesView(APIView):
         'theme', 'accent_color',
         'notif_messages', 'notif_group_mentions', 'notif_stories', 'notif_calls',
         'privacy_read_receipts', 'privacy_last_seen', 'privacy_online_status',
+        # Who Can — Flutter Settings > Privacy section se aata hai
+        'who_can_message', 'who_can_see_profile',
     ]
+
+    WHO_CAN_VALID = {'everyone', 'connections', 'nobody'}
 
     def patch(self, request):
         user = request.user
         updated = {}
+        errors = {}
+
         for field in self.ALLOWED_FIELDS:
-            if field in request.data:
-                setattr(user, field, request.data[field])
-                updated[field] = request.data[field]
+            if field not in request.data:
+                continue
+            val = request.data[field]
+            # who_can_* fields ke liye valid choices enforce karo
+            if field in ('who_can_message', 'who_can_see_profile'):
+                if val not in self.WHO_CAN_VALID:
+                    errors[field] = f"Invalid value '{val}'. Choose from: {', '.join(self.WHO_CAN_VALID)}"
+                    continue
+            setattr(user, field, val)
+            updated[field] = val
+
+        if errors:
+            return Response({'error': 'Invalid values.', 'details': errors}, status=400)
 
         if not updated:
             return Response({"error": "No valid preference fields provided."}, status=400)
 
         user.save(update_fields=list(updated.keys()))
         return Response({"message": "Preferences updated.", "updated": updated})
+
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BLOCK / UNBLOCK — Privacy enforcement
+# Flutter: Settings > Privacy > Blocked Users
+#          AdvocateDetailScreen > ⋮ menu > Block User
+# ══════════════════════════════════════════════════════════════════════════════
+
+class BlockedUsersListView(APIView):
+    """
+    GET /api/users/blocked/
+    Apne blocked users ki list return karo.
+    Flutter: Settings > Privacy > Blocked Users sheet
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        blocked_ids = Connection.objects.filter(
+            sender=request.user,
+            status='blocked'
+        ).values_list('receiver_id', flat=True)
+
+        blocked_users = User.objects.filter(id__in=blocked_ids)
+        serializer = UserMiniSerializer(blocked_users, many=True)
+        return Response(serializer.data)
+
+
+class BlockUserView(APIView):
+    """
+    POST   /api/users/<uuid:pk>/block/   → User ko block karo
+    DELETE /api/users/<uuid:pk>/block/   → User ko unblock karo
+
+    Block logic:
+    - Agar sender→receiver connection exist karta hai → status 'blocked' set karo
+    - Agar nahi exist karta → naya 'blocked' Connection create karo
+    - Reverse connection (receiver→sender) bhi remove karo (bilateral clean-up)
+
+    Flutter: AdvocateDetailScreen > ⋮ > Block User
+             Settings > Privacy > Blocked Users > Unblock
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        """Block a user."""
+        target = get_object_or_404(User, pk=pk)
+
+        if target == request.user:
+            return Response(
+                {"error": "Aap khud ko block nahi kar sakte."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # sender → receiver: block set karo (upsert)
+        conn, created = Connection.objects.get_or_create(
+            sender=request.user,
+            receiver=target,
+            defaults={'status': 'blocked'}
+        )
+        if not created and conn.status != 'blocked':
+            conn.status = 'blocked'
+            conn.save(update_fields=['status', 'updated_at'])
+
+        # Reverse connection hata do (target ka request bhi remove)
+        Connection.objects.filter(
+            sender=target,
+            receiver=request.user
+        ).exclude(status='blocked').delete()
+
+        return Response(
+            {
+                "message": f"{target.full_name} ko block kar diya gaya.",
+                "blocked": True,
+                "user_id": str(target.id),
+            },
+            status=status.HTTP_200_OK
+        )
+
+    def delete(self, request, pk):
+        """Unblock a user."""
+        target = get_object_or_404(User, pk=pk)
+
+        deleted_count, _ = Connection.objects.filter(
+            sender=request.user,
+            receiver=target,
+            status='blocked'
+        ).delete()
+
+        if deleted_count == 0:
+            return Response(
+                {"error": "Yeh user block nahi tha."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        return Response(
+            {
+                "message": f"{target.full_name} ko unblock kar diya gaya.",
+                "blocked": False,
+                "user_id": str(target.id),
+            },
+            status=status.HTTP_200_OK
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -724,8 +857,23 @@ class AdvocateProfileListView(generics.ListAPIView):
     ordering = ['-connection_count']
 
     def get_queryset(self):
+        # ── Blocked users exclude karo (dono directions) ──────────────────────
+        # 1. Jin users ko current user ne block kiya
+        # 2. Jin users ne current user ko block kiya
+        blocked_by_me = Connection.objects.filter(
+            sender=self.request.user, status='blocked'
+        ).values_list('receiver_id', flat=True)
+
+        blocked_me = Connection.objects.filter(
+            receiver=self.request.user, status='blocked'
+        ).values_list('sender_id', flat=True)
+
+        excluded_ids = set(list(blocked_by_me) + list(blocked_me))
+
         qs = AdvocateProfile.objects.filter(
             user__is_active=True,
+        ).exclude(
+            user__id__in=excluded_ids  # ← Block filter
         ).select_related('user').prefetch_related('education', 'experience', 'achievements')
 
         # ✅ FIX: Flutter ?name= query param bhi handle karo (not just DRF ?search=)
@@ -918,11 +1066,25 @@ class AdvocateOnboardingView(APIView):
 
 
 class AdvocateProfileDetailView(generics.RetrieveAPIView):
+    """
+    GET /api/advocates/<user_id>/
+    Blocked users ka profile nahi dikhata — 404 return karta hai.
+    """
     serializer_class = AdvocateProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_object(self):
+        from rest_framework.exceptions import NotFound
         user = get_object_or_404(User, id=self.kwargs['user_id'], is_active=True)
+
+        # ── Block check ───────────────────────────────────────────────────────
+        is_blocked = Connection.objects.filter(
+            Q(sender=self.request.user, receiver=user, status='blocked') |
+            Q(sender=user, receiver=self.request.user, status='blocked')
+        ).exists()
+        if is_blocked:
+            raise NotFound("Profile not found.")
+
         profile, _ = AdvocateProfile.objects.get_or_create(user=user)
         return profile
 
@@ -1192,7 +1354,6 @@ class SuggestedAdvocatesView(generics.ListAPIView):
 
     def get_queryset(self):
         # ✅ Sirf ACCEPTED connections exclude karo — pending wale tab bhi dikhne chahiye
-        # Taaki user pending status dekh sake network screen mein
         accepted_connections = Connection.objects.filter(
             Q(sender=self.request.user) | Q(receiver=self.request.user),
             status='accepted'
@@ -1201,7 +1362,17 @@ class SuggestedAdvocatesView(generics.ListAPIView):
         for s, r in accepted_connections:
             excluded.add(s)
             excluded.add(r)
-        excluded.add(self.request.user.id)  # Apne aap ko exclude karo
+        excluded.add(self.request.user.id)
+
+        # ── Blocked users bhi exclude karo ───────────────────────────────────
+        blocked_by_me = Connection.objects.filter(
+            sender=self.request.user, status='blocked'
+        ).values_list('receiver_id', flat=True)
+        blocked_me = Connection.objects.filter(
+            receiver=self.request.user, status='blocked'
+        ).values_list('sender_id', flat=True)
+        excluded.update(blocked_by_me)
+        excluded.update(blocked_me)
 
         return AdvocateProfile.objects.filter(
             user__is_active=True,
@@ -1271,6 +1442,39 @@ class CreateDirectChatView(APIView):
         serializer = CreateDirectChatSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         other = get_object_or_404(User, id=serializer.validated_data['user_id'], is_active=True)
+
+        # ── who_can_message enforcement ───────────────────────────────────────
+        # Agar target ne 'nobody' set kiya hai → room create mat karo
+        if other.who_can_message == 'nobody':
+            return Response(
+                {"error": f"{other.full_name} ne messages band kar rakhe hain."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Agar target ne 'connections' set kiya hai → connected hona zaroori hai
+        if other.who_can_message == 'connections':
+            is_connected = Connection.objects.filter(
+                Q(sender=request.user, receiver=other) |
+                Q(sender=other, receiver=request.user),
+                status='accepted'
+            ).exists()
+            if not is_connected:
+                return Response(
+                    {"error": f"{other.full_name} sirf connections se messages accept karte hain."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        # ── blocked check ─────────────────────────────────────────────────────
+        # Agar other ne request.user ko block kiya hai → room create mat karo
+        is_blocked = Connection.objects.filter(
+            sender=other, receiver=request.user, status='blocked'
+        ).exists()
+        if is_blocked:
+            return Response(
+                {"error": "Yeh user available nahi hai."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         room, created = get_direct_room(request.user, other)
         return Response(
             ChatRoomSerializer(room, context={'request': request}).data,

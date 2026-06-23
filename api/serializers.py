@@ -124,7 +124,10 @@ class UserMiniSerializer(serializers.ModelSerializer):
             'profile_photo',
             'is_advocate_verified',
             'presence_status',
-            'is_online'
+            'is_online',
+            # Privacy — advocate_detail_screen message button check ke liye
+            'who_can_message',
+            'who_can_see_profile',
         ]
 
     def get_profile_photo(self, obj):
@@ -165,6 +168,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'notif_messages', 'notif_group_mentions', 'notif_stories', 'notif_calls',
             # Profile screen: privacy settings
             'privacy_read_receipts', 'privacy_last_seen', 'privacy_online_status',
+            # Who Can — granular access controls
+            'who_can_message', 'who_can_see_profile',
             # Home stats
             'cases_handled', 'advocate_rating',
             # Onboarding check — AdvocateProfile se computed
