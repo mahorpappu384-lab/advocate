@@ -2246,6 +2246,16 @@ class FeedListCreateView(generics.ListCreateAPIView):
 
         return qs
 
+    def filter_queryset(self, queryset):
+        # ✅ FIX: ?author=me already handled manually in get_queryset() above.
+        # django-filter (PostFilter) tries to validate 'author' as a real
+        # PK/UUID, and the literal string "me" fails that validation —
+        # that mismatch was exactly what caused the 400 Bad Request.
+        # Skip DjangoFilterBackend entirely for this case.
+        if self.request.query_params.get('author') == 'me':
+            return queryset
+        return super().filter_queryset(queryset)
+
     def perform_create(self, serializer):
         data = self.request.data
 
