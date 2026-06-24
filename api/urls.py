@@ -179,6 +179,8 @@ urlpatterns = [
          views.GroupInviteLinkView.as_view(), name='group-invite-link'),
     path('chat/rooms/join/<str:invite_code>/',
          views.JoinGroupViaInviteView.as_view(), name='join-group-invite'),
+    path('channels/posts/<uuid:pk>/share/',  views.ChannelPostShareView.as_view()),
+    path('channels/posts/<uuid:pk>/public/', views.ChannelPostPublicView.as_view()),
 
     # ══════════════════════════════════════════════════════════════════════════
     # ADMIN
@@ -192,6 +194,7 @@ urlpatterns = [
     path('admin/reports/',                            views.AdminReportListView.as_view(),            name='admin-reports'),
     path('admin/reports/<uuid:pk>/resolve/',          views.AdminReportResolveView.as_view(),         name='admin-resolve'),
     path('admin/analytics/',                          views.AdminAnalyticsView.as_view(),             name='admin-analytics'),
+    path('share/channel-post/<uuid:pk>/', views.ChannelPostShareWebRedirectView.as_view(), name='channel-post-share-web'),
     path('admin/channels/',                           views.AdminChannelListView.as_view(),           name='admin-channels'),
     path('admin/legal-updates/',                      views.AdminLegalUpdateView.as_view(),           name='admin-legal-updates'),  # Create Recent Updates
     path('admin/fix-profiles/',                       views.FixMissingAdvocateProfilesView.as_view(), name='admin-fix-profiles'),   # One-time fix: existing users

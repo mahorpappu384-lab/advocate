@@ -2228,9 +2228,16 @@ class FeedListCreateView(generics.ListCreateAPIView):
         # Hashtag filter
         hashtag = self.request.query_params.get('hashtag')
 
-        qs = Post.objects.filter(
-            Q(author_id__in=ids) | Q(is_public=True)
-        ).select_related('author').distinct().order_by('-created_at')
+        # ?author=me → sirf apni posts (ManagePostsScreen ke liye)
+        author_filter = self.request.query_params.get('author')
+        if author_filter == 'me':
+            qs = Post.objects.filter(
+                author=self.request.user
+            ).select_related('author').order_by('-created_at')
+        else:
+            qs = Post.objects.filter(
+                Q(author_id__in=ids) | Q(is_public=True)
+            ).select_related('author').distinct().order_by('-created_at')
 
         if hashtag:
             qs = qs.filter(
@@ -2294,6 +2301,49 @@ class PostDetailView(APIView):
     def get(self, request, pk):
         post = get_object_or_404(Post, id=pk)
         return Response(PostSerializer(post, context={'request': request}).data)
+
+    def patch(self, request, pk):
+        """
+        PATCH /api/feed/<uuid>/
+        Sirf post ka author hi edit kar sakta hai.
+        Editable fields: content, post_type, is_public
+        """
+        post = get_object_or_404(Post, id=pk, author=request.user)
+
+        content   = request.data.get('content')
+        post_type = request.data.get('post_type')
+        is_public = request.data.get('is_public')
+
+        if content is not None:
+            content = content.strip()
+            if not content:
+                return Response(
+                    {'detail': 'Content khali nahi ho sakta.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if len(content) > 3000:
+                return Response(
+                    {'detail': 'Content 3000 characters se zyada nahi ho sakta.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            post.content = content
+
+        if post_type is not None:
+            valid_types = ['legal_update', 'judgment', 'article', 'discussion', 'question']
+            if post_type not in valid_types:
+                return Response(
+                    {'detail': f'Invalid post_type. Valid values: {valid_types}'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            post.post_type = post_type
+
+        if is_public is not None:
+            post.is_public = bool(is_public)
+
+        post.save()
+        return Response(
+            PostSerializer(post, context={'request': request}).data
+        )
 
     def delete(self, request, pk):
         post = get_object_or_404(Post, id=pk, author=request.user)
@@ -3521,3 +3571,287 @@ class FixMissingAdvocateProfilesView(APIView):
             'message': f'{created_count} profiles created.',
             'created_for': created_for,
         })
+
+"""
+════════════════════════════════════════════════════════════════════
+CHANNEL POST SHARE — Backend Views
+════════════════════════════════════════════════════════════════════
+
+YE DO VIEWS views.py mein ChannelPostCommentView ke BAAD add karo:
+
+1. ChannelPostShareView   — POST  /api/channels/posts/<pk>/share/
+                            Share count track karo + share link return karo
+
+2. ChannelPostPublicView  — GET   /api/channels/posts/<pk>/public/
+                            Unauthenticated access allowed
+                            Public channel → full post data
+                            Private channel → {"is_private": true, "channel_name": "..."}
+
+════════════════════════════════════════════════════════════════════
+URLS.py mein ye lines add karo (ChannelPostCommentView ke baad):
+════════════════════════════════════════════════════════════════════
+
+    path('channels/posts/<uuid:pk>/share/',   views.ChannelPostShareView.as_view(),   name='channel-post-share'),
+    path('channels/posts/<uuid:pk>/public/',  views.ChannelPostPublicView.as_view(),  name='channel-post-public'),
+
+════════════════════════════════════════════════════════════════════
+"""
+
+# ── 1. ChannelPostShareView ───────────────────────────────────────────────────
+
+class ChannelPostShareView(APIView):
+    """
+    POST /api/channels/posts/<uuid>/share/
+
+    Authenticated user ke liye share count track karo.
+    Response: {
+        "shared": true,
+        "share_count": 42,
+        "share_url": "https://expert-vakeel.onrender.com/share/channel-post/<post_id>/",
+        "is_public": true  ← false if channel is private
+    }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        post = get_object_or_404(ChannelPost, id=pk)
+
+        # share_count field nahi hai model mein — ChannelPost model mein add karo:
+        # share_count = models.PositiveIntegerField(default=0)
+        # Ya fir sirf link return karo bina count ke (option 2 — no migration needed)
+
+        # ── Option A: share_count field hai model mein ────────────────────────
+        # post.share_count = getattr(post, 'share_count', 0) + 1
+        # post.save(update_fields=['share_count'])
+
+        # ── Option B: model mein field nahi — sirf link return karo ──────────
+        # (Migration-free approach — turant kaam karega)
+
+        is_public = not post.channel.is_private
+
+        # App deep link — Flutter app handle karega
+        # Format: expertvakeel://channels/<channel_id>/posts/<post_id>
+        # Web fallback: https://expert-vakeel.onrender.com/share/channel-post/<post_id>/
+        deep_link = f"expertvakeel://channels/{post.channel_id}/posts/{post.id}"
+        web_fallback = f"https://expert-vakeel.onrender.com/share/channel-post/{post.id}/"
+
+        return Response({
+            "shared": True,
+            "share_url": web_fallback,
+            "deep_link": deep_link,
+            "is_public": is_public,
+            "channel_id": str(post.channel_id),
+            "post_id": str(post.id),
+            "channel_name": post.channel.name,
+        })
+
+
+# ── 2. ChannelPostPublicView ──────────────────────────────────────────────────
+
+class ChannelPostPublicView(APIView):
+    """
+    GET /api/channels/posts/<uuid>/public/
+
+    Deep link se aane wale users ke liye — LOGIN required nahi.
+    Public channel  → full post data return karo
+    Private channel → {"is_private": true, "channel_name": "...", "channel_id": "..."}
+
+    Authenticated users ko is_joined bhi batao.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, pk):
+        post = get_object_or_404(
+            ChannelPost.objects.select_related('channel', 'author'),
+            id=pk,
+        )
+        channel = post.channel
+
+        # Private channel — sirf teaser return karo
+        if channel.is_private:
+            is_joined = False
+            if request.user and request.user.is_authenticated:
+                is_joined = ChannelMembership.objects.filter(
+                    channel=channel,
+                    user=request.user,
+                    status='active',
+                ).exists()
+
+            return Response({
+                "is_private": True,
+                "channel_id": str(channel.id),
+                "channel_name": channel.name,
+                "channel_type": channel.channel_type,
+                "is_joined": is_joined,
+                "post_id": str(post.id),
+            })
+
+        # Public channel — full post return karo
+        # Author info
+        author = post.author
+        author_data = {
+            "id": str(author.id),
+            "full_name": getattr(author, 'full_name', author.get_full_name()),
+            "username": author.username,
+            "profile_photo": None,
+            "is_verified": False,
+            "tagline": None,
+        }
+        try:
+            profile = author.advocate_profile
+            author_data["profile_photo"] = (
+                profile.profile_photo.url if profile.profile_photo else None
+            )
+            author_data["is_verified"] = profile.is_verified
+            author_data["tagline"] = profile.tagline
+        except Exception:
+            pass
+
+        # Reactions summary
+        from django.db.models import Count
+        summary = {
+            row['reaction_type']: row['count']
+            for row in ChannelPostReaction.objects.filter(post=post)
+                .values('reaction_type').annotate(count=Count('id'))
+        }
+
+        # Current user ka reaction (agar logged in hai)
+        user_reaction = None
+        is_liked = False
+        is_joined = False
+        if request.user and request.user.is_authenticated:
+            reaction = ChannelPostReaction.objects.filter(
+                post=post, user=request.user
+            ).first()
+            if reaction:
+                user_reaction = reaction.reaction_type
+                is_liked = True
+            is_joined = ChannelMembership.objects.filter(
+                channel=channel,
+                user=request.user,
+                status='active',
+            ).exists()
+
+        return Response({
+            "is_private": False,
+            "post_id": str(post.id),
+            "channel_id": str(channel.id),
+            "channel_name": channel.name,
+            "channel_type": channel.channel_type,
+            "is_joined": is_joined,
+            "id": str(post.id),
+            "channel": str(post.channel_id),
+            "sub_channel": str(post.sub_channel_id) if post.sub_channel_id else None,
+            "sub_channel_name": post.sub_channel.name if post.sub_channel else None,
+            "author": author_data,
+            "content": post.content,
+            "attachment_url": post.attachment_url,
+            "attachment_type": post.attachment_type,
+            "is_pinned": post.is_pinned,
+            "is_announcement": post.is_announcement,
+            "like_count": post.like_count,
+            "comment_count": post.comment_count,
+            "created_at": post.created_at.isoformat(),
+            "updated_at": post.updated_at.isoformat(),
+            "is_liked": is_liked,
+            "user_reaction": user_reaction,
+            "reactions_summary": summary,
+        })
+
+class ChannelPostShareWebRedirectView(APIView):
+    """
+    GET /share/channel-post/<uuid>/
+
+    Web browser se aane wala share link handle karta hai.
+    WhatsApp mein jo link share hota hai wo yahan aata hai.
+
+    - Mobile: HTML page + auto deep link redirect
+    - App installed → expertvakeel:// scheme se seedha open
+    - App nahi → Play Store link
+    - WhatsApp preview ke liye og:tags bhi hain
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, pk):
+        from django.http import HttpResponse
+
+        try:
+            post = ChannelPost.objects.select_related(
+                'channel', 'author'
+            ).get(id=pk)
+        except ChannelPost.DoesNotExist:
+            html = """<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ExpertVakeel</title>
+<style>body{font-family:sans-serif;text-align:center;padding:40px 20px;background:#0f0f0f;color:#e0e0e0}
+.logo{font-size:24px;font-weight:bold;color:#D4AF37}p{color:#aaa}</style></head>
+<body><div class="logo">ExpertVakeel</div>
+<p>Yeh post available nahi hai.</p><p>India ka Legal Professional Network</p></body></html>"""
+            return HttpResponse(html, content_type='text/html', status=404)
+
+        channel    = post.channel
+        channel_id = str(channel.id)
+        post_id    = str(post.id)
+        deep_link  = f"expertvakeel://channels/{channel_id}/posts/{post_id}"
+        play_store = "https://play.google.com/store/apps/details?id=com.expertvakeel"
+
+        content_preview = (post.content[:200] + '...') if len(post.content) > 200 else post.content
+        channel_name = channel.name
+        is_private   = channel.is_private
+        author_name  = getattr(post.author, 'full_name', post.author.get_full_name())
+
+        if is_private:
+            og_desc      = f"🔒 {channel_name} — Private Channel. Join karo ExpertVakeel pe."
+            content_html = "<p>🔒 Yeh ek <strong>private channel</strong> ka post hai.</p><p>Dekhne ke liye app mein join karo.</p>"
+        else:
+            og_desc      = content_preview
+            content_html = f"<p>{content_preview}</p><p><small>— {author_name}</small></p>"
+
+        html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{channel_name} — ExpertVakeel</title>
+  <meta property="og:title" content="{channel_name} — ExpertVakeel">
+  <meta property="og:description" content="{og_desc}">
+  <meta property="og:site_name" content="ExpertVakeel">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="{channel_name} — ExpertVakeel">
+  <meta name="twitter:description" content="{og_desc}">
+  <style>
+    *{{box-sizing:border-box;margin:0;padding:0}}
+    body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f0f0f;
+         color:#e0e0e0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}}
+    .card{{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:16px;padding:28px 24px;
+           max-width:400px;width:100%;text-align:center}}
+    .logo{{color:#D4AF37;font-size:20px;font-weight:bold;margin-bottom:20px}}
+    .badge{{display:inline-flex;align-items:center;gap:6px;background:rgba(212,175,55,.12);
+            color:#D4AF37;border-radius:20px;padding:5px 12px;font-size:13px;font-weight:600;margin-bottom:16px}}
+    .content{{background:#111;border-radius:10px;padding:16px;text-align:left;margin-bottom:20px;
+              font-size:14px;line-height:1.6;color:#ccc}}
+    .btn{{display:block;width:100%;background:#D4AF37;color:#000;border:none;border-radius:10px;
+          padding:14px;font-size:15px;font-weight:600;cursor:pointer;text-decoration:none;margin-bottom:10px}}
+    .btn-outline{{display:block;width:100%;background:transparent;color:#D4AF37;border:1px solid #D4AF37;
+                 border-radius:10px;padding:12px;font-size:13px;font-weight:500;text-decoration:none}}
+    .tagline{{color:#555;font-size:11px;margin-top:16px}}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">ExpertVakeel</div>
+    <div class="badge">📢 {channel_name}</div>
+    <div class="content">{content_html}</div>
+    <a href="{deep_link}" class="btn">📱 App mein kholo</a>
+    <a href="{play_store}" class="btn-outline">Download karo — Play Store</a>
+    <p class="tagline">ExpertVakeel — India ka Legal Professional Network</p>
+  </div>
+  <script>
+    // App installed hai to auto-open karega (500ms delay for WhatsApp browser)
+    setTimeout(function(){{ window.location.href = '{deep_link}'; }}, 500);
+  </script>
+</body>
+</html>"""
+        return HttpResponse(html, content_type='text/html')
