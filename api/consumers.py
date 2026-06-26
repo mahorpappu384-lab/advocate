@@ -276,10 +276,23 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     logger.info(f"[RECEIVE] message saved | id={message.id}")
                 except Exception as e:
                     logger.error(f"[RECEIVE:FAIL] save_message crashed | {e}\n{traceback.format_exc()}")
+                    # ✅ FIX: Client ko error bata do taaki wo retry kar sake
+                    # Pehle silently return hota tha — sender ko lagta tha message gaya
+                    # jabki DB mein save hi nahi hua tha
+                    try:
+                        await self.send(text_data=json.dumps({
+                            "type": "error",
+                            "code": "save_failed",
+                            "message": "Message could not be saved. Please retry.",
+                        }))
+                    except Exception:
+                        pass
                     return
 
                 msg_payload = {
                     "id": str(message.id),
+                    # ✅ FIX: room_id bhi bhejo — Flutter side pe wrong-room guard ke liye
+                    "room_id": str(self.room_id),
                     "sender_id": str(self.user.id),
                     "sender_name": self.user.full_name,
                     "username": self.user.username,
@@ -415,11 +428,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
     ):
         from .models import Message, ChatRoom
 
-        room = ChatRoom.objects.get(id=self.room_id)
+        # ✅ FIX: get() → filter().first() — DoesNotExist crash nahi hoga
+        # Pehle get() use hota tha — agar room_id invalid ho (UUID mismatch,
+        # deleted room) toh DoesNotExist raise hota tha. Isse save_message
+        # crash hoti thi, group_send kabhi nahi hoti, aur receiver ko message
+        # milta hi nahi tha — bina kisi error ke. Ab explicitly None check karo.
+        room = ChatRoom.objects.filter(id=self.room_id).first()
+        if room is None:
+            logger.error(f"[DB:save_message] Room not found | room_id={self.room_id}")
+            raise ValueError(f"ChatRoom {self.room_id} does not exist")
 
         reply_to = None
         if reply_to_id:
-            reply_to = Message.objects.filter(id=reply_to_id).first()
+            try:
+                reply_to = Message.objects.filter(id=reply_to_id, room=room).first()
+            except Exception:
+                reply_to = None  # invalid reply_to — silently ignore, message still saves
 
         message = Message.objects.create(
             room=room,
@@ -431,9 +455,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             file_name=file_name or "",
             file_size=file_size,
         )
-        # room.updated_at ek hi query mein update karo
-        room.updated_at = timezone.now()
-        room.save(update_fields=["updated_at"])
+        # ✅ FIX: update() use karo — room instance reload ki zaroorat nahi
+        # Pehle room.save(update_fields=["updated_at"]) tha — ye safe hai
+        # lekin ek extra SELECT + UPDATE hota tha. QuerySet.update() sirf
+        # ek UPDATE query hai — faster aur race-condition-safe.
+        ChatRoom.objects.filter(id=self.room_id).update(updated_at=timezone.now())
         logger.info(f"[DB:save_message] saved | id={message.id}")
         return message
 
