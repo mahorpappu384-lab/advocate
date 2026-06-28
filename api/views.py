@@ -14,7 +14,7 @@ New features added per screenshots:
 """
 import logging
 from django.contrib.auth import get_user_model
-from django.db.models import Q
+from django.db.models import Q, Count
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.text import slugify
@@ -1394,9 +1394,16 @@ class ChatRoomListView(generics.ListAPIView):
 
     def get_queryset(self):
         tab = self.request.query_params.get('tab', 'all')
+        # ✅ FIX — ULTRA FAST: prefetch_related('messages') hata diya.
+        # Ye HAR room ka POORA message history RAM mein load karta tha
+        # (kabhi use hi nahi hota tha kyunki serializer ke andar .filter()
+        # call hota hai jo prefetch cache ko bypass karke nayi query
+        # chalata hai — so ye prefetch sirf time + memory waste karta tha).
+        # last_message/unread_count ab list() mein neeche bulk queries se
+        # compute hote hain — N+1 khatam.
         qs = ChatRoom.objects.filter(
             room_participants__user=self.request.user
-        ).prefetch_related('room_participants__user', 'messages').distinct()
+        ).prefetch_related('room_participants__user').distinct()
 
         if tab == 'direct':
             qs = qs.filter(room_type='direct')
@@ -1408,6 +1415,79 @@ class ChatRoomListView(generics.ListAPIView):
                            room_participants__is_pinned=True)
 
         return qs.order_by('-updated_at')
+
+    def list(self, request, *args, **kwargs):
+        # ✅ FIX — ULTRA FAST: N+1 query problem.
+        # Pehle: ChatRoomSerializer.get_last_message() aur get_unread_count()
+        # HAR room ke liye apni alag DB query chalate the (last message +
+        # unread count + is_pinned = 3 queries/room). 30 rooms ki list ke
+        # liye 1 (rooms) + 90+ queries hoti thi — yahi list load hone mein
+        # bahut time lagne ka #1 reason tha.
+        # Ab: poori list ke liye sirf 3 bulk queries (room ids ek saath),
+        # result ko dict mein map karke serializer context se pass karte
+        # hain — chahe 5 rooms ho ya 500, query count fixed rehta hai.
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        rooms = list(page) if page is not None else list(queryset)
+        room_ids = [r.id for r in rooms]
+
+        last_msgs = {}
+        unread_map = {}
+        pinned_map = {}
+
+        if room_ids:
+            # ── Query 1: sabhi rooms ka latest message — ek hi query ──────
+            # Postgres ka DISTINCT ON (room_id) ORDER BY room_id, -created_at
+            # — per-room "latest row" nikalne ka sabse fast tareeka, full
+            # scan ke bajaye index se hi seedha answer.
+            last_msgs = {
+                msg.room_id: msg
+                for msg in (
+                    Message.objects.filter(room_id__in=room_ids, is_deleted=False)
+                    .select_related('sender')
+                    .order_by('room_id', '-created_at')
+                    .distinct('room_id')
+                )
+            }
+
+            # ── Query 2: current user ka participant row har room ke liye ─
+            participants = ChatParticipant.objects.filter(
+                room_id__in=room_ids, user=request.user
+            ).values('room_id', 'last_read_at', 'is_pinned')
+            last_read_map = {}
+            for p in participants:
+                last_read_map[p['room_id']] = p['last_read_at']
+                pinned_map[p['room_id']] = p['is_pinned']
+
+            # ── Query 3: sabhi rooms ka unread count — ek hi query (OR'd) ──
+            unread_q = Q()
+            for rid in room_ids:
+                last_read = last_read_map.get(rid)
+                if last_read:
+                    unread_q |= Q(room_id=rid, created_at__gt=last_read)
+                else:
+                    unread_q |= Q(room_id=rid)
+            rows = (
+                Message.objects.filter(unread_q, is_deleted=False)
+                .exclude(sender=request.user)
+                .values('room_id')
+                .annotate(c=Count('id'))
+            )
+            unread_map = {row['room_id']: row['c'] for row in rows}
+
+        serializer = self.get_serializer(
+            rooms, many=True,
+            context={
+                'request': request,
+                'last_msgs': last_msgs,
+                'unread_map': unread_map,
+                'pinned_map': pinned_map,
+            },
+        )
+        data = serializer.data
+        if page is not None:
+            return self.get_paginated_response(data)
+        return Response(data)
 
 
 class PinChatView(APIView):
@@ -1517,7 +1597,7 @@ class MessageListCreateView(APIView):
         messages_qs = (
             Message.objects
             .filter(room=room, is_deleted=False)
-            .select_related('sender')
+            .select_related('sender', 'reply_to', 'reply_to__sender')
             .prefetch_related('read_receipts')
             .order_by('-created_at')   # newest first for slicing
         )
@@ -1583,8 +1663,22 @@ class MarkMessagesReadView(APIView):
 
     def post(self, request, room_id):
         room = get_object_or_404(ChatRoom, id=room_id, room_participants__user=request.user)
-        for msg in Message.objects.filter(room=room, is_deleted=False).exclude(sender=request.user):
-            MessageReadReceipt.objects.get_or_create(message=msg, user=request.user)
+        # ✅ FIX — ULTRA FAST: pehle `for msg in ...: get_or_create(...)` loop
+        # tha — agar room mein 200 unread messages hain toh 200 alag DB
+        # queries chalti thi har baar chat khulne pe. Ab ek query se unread
+        # IDs nikalo, ek bulk_create() se sab receipts insert karo
+        # (ignore_conflicts=True duplicate receipt pe error nahi dega) —
+        # total 2 queries, chahe 5 ho ya 5000 unread messages.
+        unread_ids = list(
+            Message.objects.filter(room=room, is_deleted=False)
+            .exclude(sender=request.user)
+            .values_list('id', flat=True)
+        )
+        if unread_ids:
+            MessageReadReceipt.objects.bulk_create(
+                [MessageReadReceipt(message_id=mid, user=request.user) for mid in unread_ids],
+                ignore_conflicts=True,
+            )
         ChatParticipant.objects.filter(room=room, user=request.user).update(last_read_at=timezone.now())
         return Response({"message": "Messages marked as read."})
 

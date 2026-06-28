@@ -444,12 +444,20 @@ class MessageSerializer(serializers.ModelSerializer):
         return None
 
     def get_read_by_count(self, obj):
-        return obj.read_receipts.count()
+        # ✅ FIX — ULTRA FAST (biggest one): .count() yahan EK NAYI query
+        # chalata hai, prefetch_related('read_receipts') cache ko poori
+        # tarah ignore karke. 50 messages/page = 50 extra queries sirf
+        # isi field ke liye. obj.read_receipts.all() prefetch cache use
+        # karta hai — Python mein hi len() le lo, koi extra DB hit nahi.
+        return len(obj.read_receipts.all())
 
     def get_is_read(self, obj):
+        # ✅ FIX — ULTRA FAST: .filter(user=...).exists() bhi cache bypass
+        # karke nayi query chalata tha (50 messages = 50 aur extra queries).
+        # Prefetched list ko Python mein hi check karo.
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            return obj.read_receipts.filter(user=request.user).exists()
+            return any(r.user_id == request.user.id for r in obj.read_receipts.all())
         return False
 
     def get_read_by(self, obj):
@@ -472,7 +480,16 @@ class ChatRoomSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_by', 'created_at', 'updated_at']
 
     def get_last_message(self, obj):
-        last = obj.messages.filter(is_deleted=False).last()
+        # ✅ FIX — ULTRA FAST: list() (ChatRoomListView) context se bulk
+        # pre-fetched dict use karo agar available hai — zero extra queries.
+        # Single-room detail view (ChatRoomDetailView) ke liye fallback bhi
+        # rakha hai jahan ye context nahi milega (sirf 1 room hai, 1 query
+        # theek hai).
+        last_msgs = self.context.get('last_msgs')
+        if last_msgs is not None:
+            last = last_msgs.get(obj.id)
+        else:
+            last = obj.messages.filter(is_deleted=False).order_by('-created_at').first()
         if last:
             return {
                 'id': str(last.id),
@@ -486,6 +503,9 @@ class ChatRoomSerializer(serializers.ModelSerializer):
         return None
 
     def get_unread_count(self, obj):
+        unread_map = self.context.get('unread_map')
+        if unread_map is not None:
+            return unread_map.get(obj.id, 0)
         request = self.context.get('request')
         if not request or not request.user.is_authenticated:
             return 0
@@ -498,6 +518,9 @@ class ChatRoomSerializer(serializers.ModelSerializer):
         return obj.messages.filter(is_deleted=False).exclude(sender=request.user).count()
 
     def get_is_pinned_by_me(self, obj):
+        pinned_map = self.context.get('pinned_map')
+        if pinned_map is not None:
+            return pinned_map.get(obj.id, False)
         request = self.context.get('request')
         if not request or not request.user.is_authenticated:
             return False

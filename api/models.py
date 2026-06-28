@@ -476,6 +476,20 @@ class Message(models.Model):
     class Meta:
         db_table = 'messages'
         ordering = ['created_at']
+        # ✅ FIX — ULTRA FAST: Sabse bada speed bottleneck yahi tha.
+        # Har message-list, last-message, aur unread-count query
+        # WHERE room_id=... AND is_deleted=... ORDER BY created_at karti hai —
+        # lekin koi composite index nahi tha. Postgres room ke har query pe
+        # poori table (ya kam-se-kam poore room ka data) scan karta tha aur
+        # phir sort karta tha. Jitna chat purana/bada hota, utna hi slow.
+        # Ye composite index exactly isi access pattern ko match karta hai —
+        # ab Postgres seedha index se hi answer nikal leta hai, sort bhi free
+        # mil jaata hai (index already ordered hai).
+        indexes = [
+            models.Index(fields=['room', 'is_deleted', '-created_at'],
+                         name='msg_room_deleted_created_idx'),
+            models.Index(fields=['sender'], name='msg_sender_idx'),
+        ]
 
     def __str__(self):
         return f"Msg[{self.message_type}] by {self.sender} in {self.room}"
