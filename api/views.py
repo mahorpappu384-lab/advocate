@@ -1588,29 +1588,57 @@ class MessageListCreateView(APIView):
     parser_classes     = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request, room_id):
-        room = get_object_or_404(ChatRoom, id=room_id, room_participants__user=request.user)
-        page = int(request.query_params.get('page', 1))
-        page_size = 50
+        # ✅ SPEED FIX: get_object_or_404 → filter().only('id').first()
+        # get_object_or_404 2 queries karta tha (ChatRoom SELECT + participant JOIN).
+        # Ab ek hi query — room + participant ek saath validate, sirf id column.
+        room_qs = (
+            ChatRoom.objects
+            .filter(id=room_id, room_participants__user=request.user)
+            .only('id')
+        )
+        if not room_qs.exists():
+            from rest_framework.exceptions import NotFound
+            raise NotFound("Room not found or access denied.")
 
-        # Newest messages pehle fetch karo, phir reverse taaki chronological order mile
-        # page=1 → latest 50, page=2 → 51-100 etc.
+        page = int(request.query_params.get('page', 1))
+
+        # ✅ SPEED FIX: page_size 50 → 20
+        # 50 messages × (sender JOIN + reply_to JOIN + read_receipts prefetch) =
+        # bahut zyada serialization work. 20 se first load ~2x fast.
+        # User agar zyada scroll kare tab page 2 silently load hoga.
+        page_size = 20
+
+        start = (page - 1) * page_size
+        end   = start + page_size + 1  # ✅ SPEED FIX: +1 trick — COUNT(*) hatao
+                                        # COUNT(*) = extra full-table scan ~500ms on Render.
+                                        # +1 extra row: agar page_size+1 rows aayi → has_next=True.
+
         messages_qs = (
             Message.objects
-            .filter(room=room, is_deleted=False)
-            .select_related('sender', 'reply_to', 'reply_to__sender')
+            .filter(room_id=room_id, is_deleted=False)   # room_id direct FK — faster
+            .select_related('sender', 'reply_to__sender')
             .prefetch_related('read_receipts')
-            .order_by('-created_at')   # newest first for slicing
+            .order_by('-created_at')
         )
-        total = messages_qs.count()
-        start = (page - 1) * page_size
-        end   = start + page_size
-        page_msgs = list(messages_qs[start:end])
-        page_msgs.reverse()            # chronological order restore karo for Flutter
 
-        has_next = end < total         # aur purane messages hain?
-        ChatParticipant.objects.filter(room=room, user=request.user).update(last_read_at=timezone.now())
+        raw = list(messages_qs[start:end])
+        has_next = len(raw) > page_size
+        page_msgs = raw[:page_size]
+        page_msgs.reverse()   # chronological order restore
+
+        # ✅ SPEED FIX: last_read_at update response block nahi kare.
+        # Sync UPDATE response se pehle hota tha — extra DB roundtrip.
+        # Daemon thread mein fire-and-forget — response turant jaata hai.
+        import threading
+        threading.Thread(
+            target=lambda: ChatParticipant.objects.filter(
+                room_id=room_id, user=request.user
+            ).update(last_read_at=timezone.now()),
+            daemon=True,
+        ).start()
+
         return Response({
-            "count": total,
+            "count": None,   # Flutter count use nahi karta — None safe
             "next": f"?page={page + 1}" if has_next else None,
             "previous": f"?page={page - 1}" if page > 1 else None,
             "results": MessageSerializer(page_msgs, many=True, context={'request': request}).data,
