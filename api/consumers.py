@@ -131,25 +131,35 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def _post_connect(self):
         """
         accept() ke baad background mein chalta hai.
-        set_online + user_status broadcast — ye accept() block nahi karta.
-        Agar crash ho toh connection pe koi asar nahi padta.
+        ✅ SPEED FIX: group_send (Redis — fast, ~5ms) aur set_online (DB — slow,
+        ~200-1500ms on Render) ko DECOUPLE karo.
+        Pehle gather() mein dono saath the — matlab Redis broadcast DB write ke
+        complete hone ka wait karta tha. Isiliye connect ke baad ~1-2s lag ke
+        user_status event aata tha — yahi delay message delivery ke beech dikhti thi.
+        Ab: group_send turant karo → phir set_online fire-and-forget (awaited,
+        lekin group_send iske complete hone ka wait nahi karta).
         """
         try:
-            await asyncio.gather(
-                self.set_online(True),
-                self.channel_layer.group_send(
-                    self.room_group,
-                    {
-                        "type": "user_status",
-                        "user_id": str(self.user.id),
-                        "username": self.user.username,
-                        "is_online": True,
-                    }
-                ),
+            # Step 1: Redis broadcast — turant, ~5ms
+            await self.channel_layer.group_send(
+                self.room_group,
+                {
+                    "type": "user_status",
+                    "user_id": str(self.user.id),
+                    "username": self.user.username,
+                    "is_online": True,
+                }
             )
-            logger.info(f"[POST_CONNECT] set_online + broadcast OK | user={self.user.id}")
+            logger.info(f"[POST_CONNECT] user_status broadcast OK | user={self.user.id}")
         except Exception as e:
-            logger.error(f"[POST_CONNECT] failed (non-fatal) | {e}\n{traceback.format_exc()}")
+            logger.error(f"[POST_CONNECT] group_send failed | {e}")
+
+        # Step 2: DB write — slow, fire-and-forget (non-blocking to caller)
+        try:
+            await self.set_online(True)
+            logger.info(f"[POST_CONNECT] set_online OK | user={self.user.id}")
+        except Exception as e:
+            logger.error(f"[POST_CONNECT] set_online failed (non-fatal) | {e}")
 
     # =========================================================
     # TOKEN
@@ -400,6 +410,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def user_status(self, event):
         try:
+            # ✅ FIX: Apna hi user_status apne aap ko mat bhejo.
+            # group_send sab ko bhejta hai including khud ko — isse log mein
+            # same user_id ka event 2 baar dikhta tha (dono times khud ka).
+            # Flutter side pe bhi yeh unnecessary re-render trigger karta tha.
+            if str(getattr(self.user, 'id', None)) == event.get("user_id"):
+                return
             await self.send(text_data=json.dumps(event))
         except Exception as e:
             logger.error(f"[EVENT:user_status] {e}")
