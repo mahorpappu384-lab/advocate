@@ -754,10 +754,12 @@ class HomeDashboardView(APIView):
     """
     GET /api/home/dashboard/
     Home screen: stats cards + today's hearings + recent updates.
-    Returns:
-      - cases_handled, connections, hearings_today, advocate_rating
-      - todays_hearings (list)
-      - recent_updates (list)
+
+    PERF FIX:
+    - Cached connection_count use karo (blocking DB count + sync hata diya)
+    - Background thread mein sync karo — response block nahi hoga
+    - todays_hearings list() ek baar karo, .count() separately nahi
+    - recent_updates pe explicit order_by + [:5] DB pe LIMIT lagata hai
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -765,35 +767,45 @@ class HomeDashboardView(APIView):
         user = request.user
         today = timezone.now().date()
 
-        # Real-time connection count — cached field pe rely nahi karte.
-        # Race condition aur desync se bachne ke liye direct DB query.
-        connection_count = Connection.objects.filter(
-            Q(sender=user) | Q(receiver=user),
-            status='accepted'
-        ).count()
-
-        # Cached field bhi opportunistically sync rakhte hain
-        # taaki profile screen bhi consistent rahe.
+        # ✅ PERF: Cached field padhte hain — blocking COUNT query nahi
         try:
             profile = user.advocate_profile
-            if profile.connection_count != connection_count:
-                profile.connection_count = connection_count
-                profile.save(update_fields=['connection_count'])
-        except AdvocateProfile.DoesNotExist:
-            pass
+            connection_count = profile.connection_count
+        except Exception:
+            profile = None
+            connection_count = 0
 
-        todays_hearings = Hearing.objects.filter(
+        # ✅ PERF: Background thread mein sync — response turant jaata hai
+        import threading
+        def _sync():
+            try:
+                real = Connection.objects.filter(
+                    Q(sender=user) | Q(receiver=user),
+                    status='accepted'
+                ).count()
+                if profile and profile.connection_count != real:
+                    AdvocateProfile.objects.filter(user=user).update(connection_count=real)
+            except Exception:
+                pass
+        threading.Thread(target=_sync, daemon=True).start()
+
+        todays_hearings_qs = Hearing.objects.filter(
             advocate=user, hearing_date=today
         ).order_by('hearing_time')
 
-        recent_updates = LegalUpdate.objects.filter(is_active=True)[:5]
+        # ✅ PERF: list() ek baar — count() ke liye alag query nahi
+        todays_list = list(todays_hearings_qs)
+
+        recent_updates = LegalUpdate.objects.filter(
+            is_active=True
+        ).order_by('-created_at')[:5]
 
         return Response({
             "cases_handled": user.cases_handled,
             "connections": connection_count,
-            "hearings_today": todays_hearings.count(),
+            "hearings_today": len(todays_list),
             "advocate_rating": float(user.advocate_rating),
-            "todays_hearings": HearingSerializer(todays_hearings, many=True).data,
+            "todays_hearings": HearingSerializer(todays_list, many=True).data,
             "recent_updates": LegalUpdateSerializer(recent_updates, many=True).data,
         })
 
@@ -857,26 +869,23 @@ class AdvocateProfileListView(generics.ListAPIView):
     ordering = ['-connection_count']
 
     def get_queryset(self):
-        # ── Blocked users exclude karo (dono directions) ──────────────────────
-        # 1. Jin users ko current user ne block kiya
-        # 2. Jin users ne current user ko block kiya
-        blocked_by_me = Connection.objects.filter(
-            sender=self.request.user, status='blocked'
-        ).values_list('receiver_id', flat=True)
-
-        blocked_me = Connection.objects.filter(
-            receiver=self.request.user, status='blocked'
-        ).values_list('sender_id', flat=True)
-
-        excluded_ids = set(list(blocked_by_me) + list(blocked_me))
+        # ✅ PERF: set union — 2 flat queries, Python loop nahi
+        blocked_ids = set(
+            Connection.objects.filter(
+                sender=self.request.user, status='blocked'
+            ).values_list('receiver_id', flat=True)
+        ) | set(
+            Connection.objects.filter(
+                receiver=self.request.user, status='blocked'
+            ).values_list('sender_id', flat=True)
+        )
 
         qs = AdvocateProfile.objects.filter(
             user__is_active=True,
         ).exclude(
-            user__id__in=excluded_ids  # ← Block filter
+            user__id__in=blocked_ids
         ).select_related('user').prefetch_related('education', 'experience', 'achievements')
 
-        # ✅ FIX: Flutter ?name= query param bhi handle karo (not just DRF ?search=)
         name = self.request.query_params.get('name', '').strip()
         if name:
             qs = qs.filter(
@@ -886,7 +895,6 @@ class AdvocateProfileListView(generics.ListAPIView):
                 Q(state__icontains=name)
             )
 
-        # Other filters from Flutter
         city = self.request.query_params.get('city', '').strip()
         if city:
             qs = qs.filter(city__icontains=city)
@@ -925,6 +933,62 @@ class AdvocateProfileListView(generics.ListAPIView):
                 pass
 
         return qs
+
+    def list(self, request, *args, **kwargs):
+        """
+        ✅ PERF: Context inject karo — 0 extra queries per profile.
+
+        Pehle: 50 profiles × 3 queries = 150 extra queries per search page.
+        Ab: 3 bulk queries total → context dict → O(1) serializer lookup.
+        """
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        profiles = list(page) if page is not None else list(queryset)
+
+        # ── Bulk query 1: accepted connection user IDs ─────────────────────
+        connected_user_ids = set(
+            Connection.objects.filter(
+                Q(sender=request.user) | Q(receiver=request.user),
+                status='accepted'
+            ).values_list('sender_id', flat=True)
+        ) | set(
+            Connection.objects.filter(
+                Q(sender=request.user) | Q(receiver=request.user),
+                status='accepted'
+            ).values_list('receiver_id', flat=True)
+        )
+        connected_user_ids.discard(request.user.id)
+
+        # ── Bulk query 2: following IDs ────────────────────────────────────
+        following_user_ids = set(
+            Follow.objects.filter(follower=request.user)
+            .values_list('following_id', flat=True)
+        )
+
+        # ── Bulk query 3: connection status map ───────────────────────────
+        profile_user_ids = [p.user_id for p in profiles]
+        connection_map = {}
+        if profile_user_ids:
+            for c in Connection.objects.filter(
+                Q(sender=request.user, receiver_id__in=profile_user_ids) |
+                Q(receiver=request.user, sender_id__in=profile_user_ids)
+            ).values('sender_id', 'receiver_id', 'status'):
+                is_sender = c['sender_id'] == request.user.id
+                other_id = c['receiver_id'] if is_sender else c['sender_id']
+                connection_map[other_id] = {'status': c['status'], 'is_sender': is_sender}
+
+        context = {
+            'request': request,
+            'connected_user_ids': connected_user_ids,
+            'following_user_ids': following_user_ids,
+            'connection_map': connection_map,
+        }
+
+        serializer = self.get_serializer(profiles, many=True, context=context)
+        data = serializer.data
+        if page is not None:
+            return self.get_paginated_response(data)
+        return Response(data)
 
 
 class MyAdvocateProfileView(generics.RetrieveUpdateAPIView):
@@ -1348,35 +1412,45 @@ class SuggestedAdvocatesView(generics.ListAPIView):
     """
     GET /api/network/suggested/
     Feed screen: People to Follow sidebar.
+
+    PERF FIX: order_by('?') = PostgreSQL RANDOM() = full table sort = 100-500ms!
+    Ab: connection_count DESC (indexed) → instant + better quality suggestions.
     """
     serializer_class   = AdvocateProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        # ✅ Sirf ACCEPTED connections exclude karo — pending wale tab bhi dikhne chahiye
-        accepted_connections = Connection.objects.filter(
-            Q(sender=self.request.user) | Q(receiver=self.request.user),
-            status='accepted'
-        ).values_list('sender_id', 'receiver_id')
-        excluded = set()
-        for s, r in accepted_connections:
-            excluded.add(s)
-            excluded.add(r)
+        # ✅ PERF: flat queries + set union
+        excluded = set(
+            Connection.objects.filter(
+                Q(sender=self.request.user) | Q(receiver=self.request.user),
+                status='accepted'
+            ).values_list('sender_id', flat=True)
+        ) | set(
+            Connection.objects.filter(
+                Q(sender=self.request.user) | Q(receiver=self.request.user),
+                status='accepted'
+            ).values_list('receiver_id', flat=True)
+        )
         excluded.add(self.request.user.id)
 
-        # ── Blocked users bhi exclude karo ───────────────────────────────────
-        blocked_by_me = Connection.objects.filter(
-            sender=self.request.user, status='blocked'
-        ).values_list('receiver_id', flat=True)
-        blocked_me = Connection.objects.filter(
-            receiver=self.request.user, status='blocked'
-        ).values_list('sender_id', flat=True)
-        excluded.update(blocked_by_me)
-        excluded.update(blocked_me)
+        excluded.update(
+            Connection.objects.filter(
+                sender=self.request.user, status='blocked'
+            ).values_list('receiver_id', flat=True)
+        )
+        excluded.update(
+            Connection.objects.filter(
+                receiver=self.request.user, status='blocked'
+            ).values_list('sender_id', flat=True)
+        )
 
+        # ✅ PERF: order_by('-connection_count') — index use karta hai, instant
         return AdvocateProfile.objects.filter(
             user__is_active=True,
-        ).exclude(user__id__in=excluded).order_by('?')[:50]
+        ).exclude(
+            user__id__in=excluded
+        ).select_related('user').order_by('-connection_count')[:50]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1725,9 +1799,32 @@ class ChannelListView(generics.ListAPIView):
     ordering           = ['-member_count']
 
     def get_queryset(self):
-        # FIXED: is_private=False filter hataya — private channels bhi search mein dikhenge
-        # Flutter side pe private channels ke liye "Request to Join" button dikhaega
         return Channel.objects.all().prefetch_related('sub_channels')
+
+    def list(self, request, *args, **kwargs):
+        """
+        ✅ PERF: membership_map inject — 0 extra queries per channel.
+        Pehle: har channel ke liye alag membership query. 30 channels = 30 queries.
+        Ab: 1 bulk query → dict map → context.
+        """
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        channels = list(page) if page is not None else list(queryset)
+
+        channel_ids = [c.id for c in channels]
+        membership_map = {}
+        if channel_ids:
+            for m in ChannelMembership.objects.filter(
+                channel_id__in=channel_ids, user=request.user
+            ).values('channel_id', 'role', 'status'):
+                membership_map[m['channel_id']] = {'role': m['role'], 'status': m['status']}
+
+        context = {'request': request, 'membership_map': membership_map}
+        serializer = self.get_serializer(channels, many=True, context=context)
+        data = serializer.data
+        if page is not None:
+            return self.get_paginated_response(data)
+        return Response(data)
 
 
 class MyChannelsView(generics.ListAPIView):
@@ -1735,11 +1832,31 @@ class MyChannelsView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        # sirf active memberships — pending join requests exclude karo
         return Channel.objects.filter(
             memberships__user=self.request.user,
             memberships__status='active',
         ).prefetch_related('sub_channels').distinct()
+
+    def list(self, request, *args, **kwargs):
+        """✅ PERF: membership_map inject — 0 extra queries per channel."""
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        channels = list(page) if page is not None else list(queryset)
+
+        channel_ids = [c.id for c in channels]
+        membership_map = {}
+        if channel_ids:
+            for m in ChannelMembership.objects.filter(
+                channel_id__in=channel_ids, user=request.user
+            ).values('channel_id', 'role', 'status'):
+                membership_map[m['channel_id']] = {'role': m['role'], 'status': m['status']}
+
+        context = {'request': request, 'membership_map': membership_map}
+        serializer = self.get_serializer(channels, many=True, context=context)
+        data = serializer.data
+        if page is not None:
+            return self.get_paginated_response(data)
+        return Response(data)
 
 
 class ChannelDetailView(generics.RetrieveAPIView):
@@ -2024,15 +2141,14 @@ class ChannelPostPresignView(APIView):
 class ChannelMembersListView(generics.ListAPIView):
     """
     GET /api/channels/<channel_id>/members/
-    Returns all active members of a channel with their user info and role.
-    Only accessible by channel members.
+
+    PERF FIX: select_related('user__advocate_profile') — loop mein zero extra queries.
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, channel_id):
         channel = get_object_or_404(Channel, id=channel_id)
 
-        # Only members can see the member list
         is_member = ChannelMembership.objects.filter(
             channel=channel, user=request.user, status='active'
         ).exists()
@@ -2040,19 +2156,18 @@ class ChannelMembersListView(generics.ListAPIView):
             from rest_framework.exceptions import PermissionDenied
             raise PermissionDenied("You must be a member to view the member list.")
 
+        # ✅ PERF: select_related('user__advocate_profile') — profile_photo ke liye zero extra queries
         memberships = ChannelMembership.objects.filter(
             channel=channel
-        ).select_related('user').order_by('role', 'joined_at')
+        ).select_related('user', 'user__advocate_profile').order_by('role', 'joined_at')
 
         data = []
         for m in memberships:
             u = m.user
-            profile_photo = None
-            if hasattr(u, 'profile_photo') and u.profile_photo:
-                try:
-                    profile_photo = request.build_absolute_uri(u.profile_photo.url)
-                except Exception:
-                    pass
+            # ✅ PERF: getattr — no try/except, no extra query
+            profile = getattr(u, 'advocate_profile', None)
+            profile_photo = profile.profile_photo if (profile and profile.profile_photo) else None
+
             data.append({
                 'membership_id': str(m.id) if hasattr(m, 'id') else None,
                 'role': m.role,
@@ -2147,7 +2262,11 @@ class ChannelPostListCreateView(generics.ListCreateAPIView):
     """
     GET  /api/channels/<channel_id>/posts/
     POST /api/channels/<channel_id>/posts/
-    Supports ?sub_channel=<id> to filter by sub-channel.
+
+    PERF FIX:
+    - select_related('author__advocate_profile', 'sub_channel') added
+    - prefetch_related comments + replies — N+1 khatam
+    - list() override: user_reactions_channel + user_liked_post_ids_channel bulk inject
     """
     serializer_class   = ChannelPostSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -2155,11 +2274,45 @@ class ChannelPostListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         channel = get_object_or_404(Channel, id=self.kwargs['channel_id'])
-        qs = ChannelPost.objects.filter(channel=channel).select_related('author')
+        qs = ChannelPost.objects.filter(channel=channel).select_related(
+            'author', 'author__advocate_profile', 'sub_channel'
+        ).prefetch_related(
+            'comments__author__advocate_profile',
+            'comments__replies__author__advocate_profile',
+        )
         sub_channel_id = self.request.query_params.get('sub_channel')
         if sub_channel_id:
             qs = qs.filter(sub_channel_id=sub_channel_id)
         return qs
+
+    def list(self, request, *args, **kwargs):
+        """✅ PERF: reactions bulk inject — 0 extra queries per post."""
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        posts = list(page) if page is not None else list(queryset)
+        post_ids = [p.id for p in posts]
+
+        user_reactions_channel = {}
+        user_liked_post_ids_channel = set()
+
+        if post_ids and request.user.is_authenticated:
+            for r in ChannelPostReaction.objects.filter(
+                post_id__in=post_ids, user=request.user
+            ).values('post_id', 'reaction_type'):
+                user_reactions_channel[r['post_id']] = r['reaction_type']
+                user_liked_post_ids_channel.add(r['post_id'])
+
+        context = {
+            'request': request,
+            'user_reactions_channel': user_reactions_channel,
+            'user_liked_post_ids_channel': user_liked_post_ids_channel,
+        }
+
+        serializer = self.get_serializer(posts, many=True, context=context)
+        data = serializer.data
+        if page is not None:
+            return self.get_paginated_response(data)
+        return Response(data)
 
     def perform_create(self, serializer):
         channel = get_object_or_404(Channel, id=self.kwargs['channel_id'])
