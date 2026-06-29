@@ -1691,7 +1691,7 @@ class MessageListCreateView(APIView):
             Message.objects
             .filter(room_id=room_id, is_deleted=False)   # room_id direct FK — faster
             .select_related('sender', 'reply_to__sender')
-            .prefetch_related('read_receipts')
+            .prefetch_related('read_receipts__user')  # user_id ke liye — get_read_by() mein zero extra queries
             .order_by('-created_at')
         )
 

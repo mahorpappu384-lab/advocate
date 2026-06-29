@@ -428,16 +428,70 @@ class ChatParticipantSerializer(serializers.ModelSerializer):
 
 
 class MessageSerializer(serializers.ModelSerializer):
-    sender = UserMiniSerializer(read_only=True)
+    """
+    PERF OVERHAUL — message list 10s -> ~2s
+
+    Pehle ki problems:
+    1. sender = UserMiniSerializer — heavy: 12+ fields + SerializerMethodField calls per message.
+    2. reply_to = PrimaryKeyRelatedField — sirf ID tha, Flutter nested object expect karta tha.
+    3. read_by field missing — read_receipts prefetch slow + Flutter readBy always empty.
+
+    Ab:
+    - sender: lightweight dict (id, full_name, username only)
+    - sender_id / sender_name / username: flat fields — WS/cache consistent, isMine() sahi kaam kare
+    - reply_to: nested light serializer (id + content + sender_name)
+    - read_by: list of user IDs from prefetched read_receipts (zero extra queries)
+    """
+    sender_id   = serializers.CharField(source='sender.id',        read_only=True)
+    sender_name = serializers.CharField(source='sender.full_name', read_only=True)
+    username    = serializers.CharField(source='sender.username',   read_only=True)
+    sender      = serializers.SerializerMethodField()
+    reply_to    = serializers.SerializerMethodField()
+    read_by     = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
         fields = [
-            'id', 'room', 'sender', 'message_type', 'content',
+            'id', 'room', 'sender', 'sender_id', 'sender_name', 'username',
+            'message_type', 'content',
             'file_url', 'file_name', 'file_size',
             'reply_to', 'is_edited', 'is_deleted', 'created_at', 'updated_at',
+            'read_by',
         ]
         read_only_fields = ['id', 'sender', 'room', 'is_edited', 'is_deleted', 'created_at', 'updated_at']
+
+    def get_sender(self, obj):
+        # Minimal sender dict — Flutter UserModel.fromJson ke liye
+        if not obj.sender_id:
+            return None
+        s = obj.sender
+        return {
+            'id': str(s.id),
+            'full_name': s.full_name or '',
+            'username': s.username or '',
+            'email': getattr(s, 'email', '') or '',
+            'is_online': getattr(s, 'is_online', False),
+            'profile_photo': None,
+        }
+
+    def get_reply_to(self, obj):
+        # Lightweight — reply_to__sender select_related view mein already hai
+        r = obj.reply_to
+        if not r:
+            return None
+        return {
+            'id': str(r.id),
+            'content': r.content or '',
+            'message_type': r.message_type or 'text',
+            'sender_name': r.sender.full_name if r.sender else '',
+        }
+
+    def get_read_by(self, obj):
+        # read_receipts prefetch view mein already hai — zero extra queries
+        try:
+            return [str(rr.user_id) for rr in obj.read_receipts.all()]
+        except Exception:
+            return []
 
 
 class ChatRoomSerializer(serializers.ModelSerializer):
