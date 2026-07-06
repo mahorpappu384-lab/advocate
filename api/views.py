@@ -1525,20 +1525,34 @@ class ChatRoomListView(generics.ListAPIView):
             }
 
             # ── Query 2: current user ka participant row har room ke liye ─
+            # ✅ "Clear Chat": cleared_at bhi yahin se nikalte hain — extra
+            # query ki zaroorat nahi, same values() call mein aa jaata hai.
             participants = ChatParticipant.objects.filter(
                 room_id__in=room_ids, user=request.user
-            ).values('room_id', 'last_read_at', 'is_pinned')
+            ).values('room_id', 'last_read_at', 'is_pinned', 'cleared_at')
             last_read_map = {}
+            cleared_map = {}
             for p in participants:
                 last_read_map[p['room_id']] = p['last_read_at']
                 pinned_map[p['room_id']] = p['is_pinned']
+                cleared_map[p['room_id']] = p['cleared_at']
+
+            # ── "Clear Chat" — agar last message clear se pehle ka hai,
+            # toh list mein "no last message" dikhao (jaise fresh chat) ──
+            for rid, cleared_at in cleared_map.items():
+                if cleared_at and rid in last_msgs and last_msgs[rid].created_at <= cleared_at:
+                    del last_msgs[rid]
 
             # ── Query 3: sabhi rooms ka unread count — ek hi query (OR'd) ──
+            # Floor = max(last_read_at, cleared_at) — jo bhi baad mein hua ho,
+            # us se pehle ke messages unread count mein nahi ginne chahiye.
             unread_q = Q()
             for rid in room_ids:
                 last_read = last_read_map.get(rid)
-                if last_read:
-                    unread_q |= Q(room_id=rid, created_at__gt=last_read)
+                cleared_at = cleared_map.get(rid)
+                floor = max([t for t in (last_read, cleared_at) if t], default=None)
+                if floor:
+                    unread_q |= Q(room_id=rid, created_at__gt=floor)
                 else:
                     unread_q |= Q(room_id=rid)
             rows = (
@@ -1587,6 +1601,33 @@ class PinChatView(APIView):
         participant.is_pinned = False
         participant.save(update_fields=['is_pinned'])
         return Response({"message": "Chat unpinned.", "is_pinned": False})
+
+
+class ClearChatView(APIView):
+    """
+    POST /api/chat/rooms/<room_id>/clear/  — "Clear Chat" (WhatsApp-style)
+
+    Sirf request.user ke liye chat clear hoti hai:
+    - Messages actually delete/mutate NAHI hote — room ke doosre
+      participants ko unki poori history dikhti rehti hai.
+    - Sirf ChatParticipant.cleared_at = now() set hota hai. Us timestamp
+      se pehle ka koi bhi message ab is user ko MessageListCreateView,
+      last_message aur unread_count mein nahi dikhega.
+    - Naye messages (clear ke baad wale) normal tarah se aate rehte hain.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, room_id):
+        participant = get_object_or_404(
+            ChatParticipant, room_id=room_id, user=request.user
+        )
+        now = timezone.now()
+        participant.cleared_at = now
+        participant.save(update_fields=['cleared_at'])
+        return Response({
+            "message": "Chat cleared.",
+            "cleared_at": now.isoformat(),
+        })
 
 
 class CreateDirectChatView(APIView):
@@ -1662,15 +1703,18 @@ class MessageListCreateView(APIView):
     parser_classes     = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request, room_id):
-        # ✅ SPEED FIX: get_object_or_404 → filter().only('id').first()
+        # ✅ SPEED FIX: get_object_or_404 → filter().only().first()
         # get_object_or_404 2 queries karta tha (ChatRoom SELECT + participant JOIN).
-        # Ab ek hi query — room + participant ek saath validate, sirf id column.
-        room_qs = (
-            ChatRoom.objects
-            .filter(id=room_id, room_participants__user=request.user)
-            .only('id')
+        # Ab ek hi query — room + participant ek saath validate, aur wahi
+        # row se cleared_at bhi mil jaata hai ("Clear Chat" support ke liye)
+        # — extra query ki zaroorat nahi.
+        participant = (
+            ChatParticipant.objects
+            .filter(room_id=room_id, user=request.user)
+            .only('id', 'cleared_at')
+            .first()
         )
-        if not room_qs.exists():
+        if not participant:
             from rest_framework.exceptions import NotFound
             raise NotFound("Room not found or access denied.")
 
@@ -1694,6 +1738,11 @@ class MessageListCreateView(APIView):
             .prefetch_related('read_receipts__user')  # user_id ke liye — get_read_by() mein zero extra queries
             .order_by('-created_at')
         )
+        # ✅ "Clear Chat": is user ne agar chat clear ki hai, toh us waqt se
+        # pehle ke messages ab isse dobara nahi dikhne chahiye — sirf uske
+        # apne view se hide, room/doosre participants untouched rehte hain.
+        if participant.cleared_at:
+            messages_qs = messages_qs.filter(created_at__gt=participant.cleared_at)
 
         raw = list(messages_qs[start:end])
         has_next = len(raw) > page_size

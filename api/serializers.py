@@ -516,8 +516,17 @@ class ChatRoomSerializer(serializers.ModelSerializer):
         if last_msgs is not None:
             last = last_msgs.get(obj.id)
         else:
-            # Fallback for single-room views
-            last = obj.messages.filter(is_deleted=False).select_related('sender').order_by('-created_at').first()
+            # Fallback for single-room views — "Clear Chat" ko yahan bhi
+            # respect karo, warna clear ke baad bhi purana last_message
+            # single-room responses (room detail, direct-create) mein
+            # dikhta reh jaata.
+            qs = obj.messages.filter(is_deleted=False)
+            request = self.context.get('request')
+            if request and request.user.is_authenticated:
+                participant = obj.room_participants.filter(user=request.user).first()
+                if participant and participant.cleared_at:
+                    qs = qs.filter(created_at__gt=participant.cleared_at)
+            last = qs.select_related('sender').order_by('-created_at').first()
 
         if not last:
             return None
@@ -541,10 +550,13 @@ class ChatRoomSerializer(serializers.ModelSerializer):
         participant = obj.room_participants.filter(user=request.user).first()
         if not participant:
             return 0
-        last_read = participant.last_read_at
-        if last_read:
-            return obj.messages.filter(created_at__gt=last_read, is_deleted=False).exclude(sender=request.user).count()
-        return obj.messages.filter(is_deleted=False).exclude(sender=request.user).count()
+        # ✅ "Clear Chat": floor = jo baad mein hua ho, last_read_at ya cleared_at
+        candidates = [t for t in (participant.last_read_at, participant.cleared_at) if t]
+        floor = max(candidates) if candidates else None
+        qs = obj.messages.filter(is_deleted=False).exclude(sender=request.user)
+        if floor:
+            qs = qs.filter(created_at__gt=floor)
+        return qs.count()
 
     def get_is_pinned_by_me(self, obj):
         pinned_map = self.context.get('pinned_map')

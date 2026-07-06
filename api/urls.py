@@ -102,6 +102,7 @@ urlpatterns = [
     path('chat/rooms/<uuid:room_id>/messages/',      views.MessageListCreateView.as_view(),  name='messages'),
     path('chat/rooms/<uuid:room_id>/read/',          views.MarkMessagesReadView.as_view(),   name='mark-read'),
     path('chat/rooms/<uuid:room_id>/pin/',           views.PinChatView.as_view(),            name='pin-chat'),            # Pin/unpin chat
+    path('chat/rooms/<uuid:room_id>/clear/',         views.ClearChatView.as_view(),          name='clear-chat'),          # Clear Chat (self-only)
     path('chat/messages/<uuid:pk>/',                 views.MessageDetailView.as_view(),      name='message-detail'),
 
     # ══════════════════════════════════════════════════════════════════════════

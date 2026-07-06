@@ -466,6 +466,12 @@ class ChatParticipant(models.Model):
     last_read_at = models.DateTimeField(null=True, blank=True)
     is_muted = models.BooleanField(default=False)
     is_pinned = models.BooleanField(default=False)
+    # ✅ NEW — "Clear Chat" (WhatsApp-style): sirf is user ke liye history
+    # hide hoti hai. Messages delete NAHI hote — dusre participants ko
+    # unki poori history dikhti rehti hai. cleared_at se pehle ka koi
+    # bhi message (messages list, last_message, unread_count) is user
+    # ko ab nahi dikhega.
+    cleared_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = 'chat_participants'
