@@ -10,6 +10,7 @@ urlpatterns = [
 
     # API v1
     path('api/', include('api.urls')),
+    path('api/admin/', include('api.admin_urls')),
 
     # API Documentation (Swagger / Redoc)
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),

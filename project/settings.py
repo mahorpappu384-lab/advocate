@@ -17,6 +17,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-me')
 DEBUG = config('DEBUG', default=True, cast=bool)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='*').split(',')
+ADMIN_BOOTSTRAP_API_KEY = os.getenv("ADMIN_BOOTSTRAP_API_KEY")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 
 # ─── Applications ─────────────────────────────────────────────────────────────
