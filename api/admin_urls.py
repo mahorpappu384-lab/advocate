@@ -77,7 +77,10 @@ urlpatterns = [
     # 5) ADVOCATE PROFILE + EDUCATION/EXPERIENCE/ACHIEVEMENTS
     # ══════════════════════════════════════════════════════════════════════
     path('advocate-profiles/',             av.AdminAdvocateProfileListView.as_view(),   name='advocate-profile-list'),
-    path('advocate-profiles/<uuid:pk>/',   av.AdminAdvocateProfileDetailView.as_view(), name='advocate-profile-detail'),
+    # NOTE: AdvocateProfile has NO explicit UUID id field in models.py — it uses
+    # Django's default integer AutoField (1, 2, 3, ...), unlike every other model
+    # here. So this one route MUST use <int:pk>, not <uuid:pk>.
+    path('advocate-profiles/<int:pk>/',    av.AdminAdvocateProfileDetailView.as_view(), name='advocate-profile-detail'),
     path('advocate-education/',            av.AdminAdvocateEducationListView.as_view(), name='advocate-education-list'),
     path('advocate-experience/',           av.AdminAdvocateExperienceListView.as_view(), name='advocate-experience-list'),
     path('advocate-achievements/',         av.AdminAdvocateAchievementListView.as_view(), name='advocate-achievement-list'),
