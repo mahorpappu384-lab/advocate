@@ -194,7 +194,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:63820",
-    "https://magic-salon-admin.netlify.app",
+    "https://expert-vakeel-admin-panel.netlify.app",
 ]
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = [
